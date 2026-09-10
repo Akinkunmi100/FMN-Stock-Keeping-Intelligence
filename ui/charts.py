@@ -182,8 +182,8 @@ def build_demand_and_receipts_chart(sku_history: pd.DataFrame) -> go.Figure:
             mode="lines",
             name="Daily Units Sold",
             fill="tozeroy",
-            fillcolor="rgba(158, 210, 220, 0.35)",
-            line=dict(color=COLORS["accent_blue"], width=1.8),
+            fillcolor="rgba(74, 122, 135, 0.18)",
+            line=dict(color=COLORS["chart_series"], width=1.8),
             hovertemplate="Date: %{x|%Y-%m-%d}<br>Demand: %{y:,.0f} units<extra></extra>",
         )
     )

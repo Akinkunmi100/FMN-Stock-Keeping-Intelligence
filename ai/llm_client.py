@@ -1,12 +1,16 @@
 """
 ai/llm_client.py — Free-Tier Groq LLM Client & Deterministic Fallback Engine
 ============================================================================
-Integrates with Groq's high-speed inference engine using the open-weights
-Llama-3.3-70B model.
+Integrates with Groq's free-tier inference API. The primary and fallback
+model ids are configured in config.py (DEFAULT_GROQ_MODEL /
+GROQ_FALLBACK_MODELS) — not hardcoded here, and not assumed by callers,
+since which model actually answers a given request can vary if the primary
+is unavailable and a fallback is used instead. LLMResult.model carries the
+model id that actually generated a live response, so the UI can display the
+real answer rather than a guess.
 
 Free Tier Information:
 - Groq provides a 100% free tier (no credit card required)
-- Allowance: 1,000 requests/day, 30 requests/minute on Llama-3.3-70B
 - Get a free API key in 30 seconds at: https://console.groq.com
 
 Zero-Dependency Local Fallback:
@@ -36,6 +40,7 @@ class LLMResult:
     text: str
     live: bool
     warning: str | None = None
+    model: str | None = None  # the actual Groq model id that answered, when live
 
 
 def get_groq_api_key() -> str:
@@ -106,7 +111,7 @@ def execute_groq_chat(messages: list[dict[str, str]]) -> LLMResult:
                 max_tokens=GROQ_MAX_TOKENS,
             )
             text = response.choices[0].message.content.strip()
-            return LLMResult(text=text, live=True)
+            return LLMResult(text=text, live=True, model=model_name)
         except Exception as exc:
             err_msg = str(exc)
             last_err = err_msg

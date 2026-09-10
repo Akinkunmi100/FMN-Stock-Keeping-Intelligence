@@ -134,7 +134,7 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
     })
     csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="📥 Download Procurement Requisition Plan (CSV with Order-By Dates)",
+        label="Download Procurement Requisition Plan (CSV with Order-By Dates)",
         data=csv_bytes,
         file_name=f"fmn_procurement_requisitions_{meta.get('date_max', 'latest')}.csv",
         mime="text/csv",
@@ -145,7 +145,7 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
     # ─────────────────────────────────────────────────────────────────────────
     # 5. REPLENISHMENT TIMING PANEL (ANSWERS USER'S EXACT QUESTION)
     # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### ⏱️ Replenishment Timing & Order Deadlines")
+    st.markdown("### Replenishment Timing & Order Deadlines")
     st.caption("Answers: 'When exactly must purchase orders be released before stockouts occur?'")
 
     urgent_order_items = scores[scores["urgency"] >= 2].head(4)
@@ -173,13 +173,13 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
     # 6. OVERSTOCK REMEDIATION PANEL (ANSWERS USER'S EXACT QUESTION)
     # ─────────────────────────────────────────────────────────────────────────
     if not overstock.empty:
-        st.markdown("### 📦 Overstock Diagnostics & Remediation Playbook")
+        st.markdown("### Overstock Diagnostics & Remediation Playbook")
         st.caption("Detailed metrics and operational actions for capital tied up in surplus inventory.")
 
         for _, r in overstock.iterrows():
             st.markdown(
                 f"<div class='overstock-card'>"
-                f"<div class='overstock-card-title'>🔵 {r['sku_id']} — {r['category']} (Class {r['abc_class']})</div>"
+                f"<div class='overstock-card-title'>{r['sku_id']} — {r['category']} (Class {r['abc_class']})</div>"
                 f"<div style='display:flex; gap:20px; margin: 0.6rem 0;'>"
                 f"<div><b>Current Stock:</b> {r['stock']:,.0f} units</div>"
                 f"<div><b>Days of Coverage:</b> {r['days_coverage']:.1f} days (Max Target: {r['coverage_limit']:.0f}d)</div>"

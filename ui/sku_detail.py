@@ -18,7 +18,7 @@ import streamlit as st
 
 from ai.grounding import build_sku_facts, explain_sku
 from ai.llm_client import LLMResult
-from config import COLORS
+from config import ABC_THRESHOLDS, COLORS
 from ui.charts import (
     build_demand_and_receipts_chart,
     build_risk_gauge,
@@ -81,7 +81,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         action_html = f"""
         <div class='action-card' style='border-left-color: {border_color};'>
             <div class='action-card-title' style='color: {border_color};'>
-                🚨 RECOMMENDED PROCUREMENT ACTION: {row['timing_urgency_badge']}
+                RECOMMENDED PROCUREMENT ACTION: {row['timing_urgency_badge']}
             </div>
             <p>
                 • <b>Action:</b> Release Purchase Order for <b>{row['roq']:,.0f} units</b> by <b>{row['order_by_date']}</b>.<br>
@@ -94,7 +94,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     elif row["bucket"] == "Overstock risk":
         action_html = f"""
         <div class='overstock-card'>
-            <div class='overstock-card-title'>📦 RECOMMENDED OVERSTOCK ACTION: EXCESS INVENTORY DETECTED</div>
+            <div class='overstock-card-title'>RECOMMENDED OVERSTOCK ACTION: EXCESS INVENTORY DETECTED</div>
             <p>
                 • <b>Surplus Units:</b> {row['excess_units']:,.0f} units over target Order-Up-To level.<br>
                 • <b>Coverage:</b> {row['days_coverage']:.1f} days of supply (+{row['days_over_target']:.1f} days over {row['coverage_limit']:.0f}-day target).<br>
@@ -105,7 +105,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     else:
         action_html = f"""
         <div class='action-card' style='border-left-color: {COLORS["low"]};'>
-            <div class='action-card-title' style='color: {COLORS["low"]};'>✅ INVENTORY POSITION HEALTHY</div>
+            <div class='action-card-title' style='color: {COLORS["low"]};'>INVENTORY POSITION HEALTHY</div>
             <p>
                 Current stock ({row['stock']:,.0f} units) provides {row['days_coverage']:.1f} days of coverage, safely above the {row['lead_time']:.0f}-day replenishment cycle. No purchase order required at this time.
             </p>
@@ -142,7 +142,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     # ─────────────────────────────────────────────────────────────────────────
     # 5. WHAT-IF SENSITIVITY SIMULATOR
     # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### 🎛️ Interactive \u201cWhat-If\u201d Stress-Test Simulator")
+    st.markdown("### What-If Sensitivity Simulator")
     st.caption("Simulate unexpected consumer demand surges and supplier delivery delays in real time.")
 
     sim_col1, sim_col2 = st.columns(2)
@@ -194,8 +194,8 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     # ─────────────────────────────────────────────────────────────────────────
     # 6. AI GROUNDED EXPLANATION (FREE GROQ / LOCAL ENGINE)
     # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### 🤖 Operational Diagnosis & AI Grounded Explanation")
-    st.caption("Strictly grounded in empirical calculation evidence. Powered by free Groq Llama-3.3-70B or deterministic fallback.")
+    st.markdown("### Operational Diagnosis")
+    st.caption("Strictly grounded in empirical calculation evidence — a live model call when available, otherwise a deterministic local explanation.")
 
     if st.button("Generate / Refresh Diagnosis", type="primary") or "explanation" not in st.session_state or st.session_state.get("explanation_sku") != selected_sku:
         with st.spinner("Compiling facts and generating diagnostic report…"):
@@ -207,7 +207,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         if llm_res.warning:
             st.info(llm_res.warning)
 
-        source_label = "Live Groq Llama-3.3-70B Model Explanation" if llm_res.live else "Local Grounded Deterministic Explanation"
+        source_label = f"Live Model Explanation ({llm_res.model})" if llm_res.live and llm_res.model else "Local Grounded Deterministic Explanation"
         st.markdown(
             f"<div class='evidence'>"
             f"<div class='evidence-title'>{source_label}</div>"
@@ -221,8 +221,13 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     # ─────────────────────────────────────────────────────────────────────────
     # 7. DETAILED EVIDENCE AUDIT TABLE
     # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### 📋 Complete Parameter Evidence Table")
+    st.markdown("### Complete Parameter Evidence Table")
     facts = build_sku_facts(row)
+    abc_tier_label = {
+        "A": f"Top {ABC_THRESHOLDS['A']:.0%} Volume",
+        "B": "Moderate Volume",
+        "C": "Tail Item",
+    }.get(facts["abc_class"], "")
     evidence_table = pd.DataFrame({
         "Parameter": [
             "Current Closing Stock",
@@ -263,7 +268,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
             f"{row['timing_urgency_badge']} ({row['timing_urgency_msg']})",
             f"{row['excess_units']:,.0f} units",
             f"{row['days_over_target']:.1f} days",
-            f"Class {facts['abc_class']} ({'Top 70% Volume' if facts['abc_class'] == 'A' else 'Moderate Volume' if facts['abc_class'] == 'B' else 'Tail Item'})",
+            f"Class {facts['abc_class']} ({abc_tier_label})",
             f"{facts['coefficient_of_variation']:.3f}",
             f"{facts['demand_change_percent']:+.1f}%",
             f"{facts['risk_score']:.0f} / 100 ({row['severity']} priority)",

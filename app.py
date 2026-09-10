@@ -7,7 +7,7 @@ mathematical inventory engine, AI diagnostic assistant, and interactive UI views
 Architecture:
 - config.py: Central operational thresholds, service level z-scores, and color palette
 - core/: Data sanitization, stochastic safety stock, backtest simulation, and alerts
-- ai/: Free-tier Groq LLM client (Llama-3.3-70B), evidence grounding, and conversational Q&A
+- ai/: Free-tier Groq LLM client, evidence grounding, and conversational Q&A
 - ui/: Streamlit components, Plotly interactive visualizations, and CSS design system
 - monitor.py: Standalone scheduled CLI alert dispatcher
 """
@@ -21,7 +21,7 @@ import pandas as pd
 import streamlit as st
 
 # Central Configuration
-from config import DATA_PATH
+from config import DATA_PATH, DEFAULT_GROQ_MODEL
 
 # Core Analytics Engines
 from core.backtest import run_historical_backtest
@@ -148,42 +148,34 @@ def run_app() -> None:
 
         st.divider()
 
-        # Expandable: Free AI Model Information
-        with st.expander("🤖 Free AI Model Info"):
+        # Expandable: AI Model Information
+        with st.expander("AI Model Info"):
             st.markdown(
-                "**Powered by Groq Free Tier**\n\n"
-                "• Model: `llama-3.3-70b-versatile`\n"
-                "• **100% Free**: No credit card required, 1,000 requests/day allowance.\n"
-                "• Get free key at: [console.groq.com](https://console.groq.com)\n"
-                "• *Note*: The app works completely without any key using deterministic evidence-based fallback."
+                f"**Groq free tier**\n\n"
+                f"- Configured model: `{DEFAULT_GROQ_MODEL}` (falls back to alternate Groq models if unavailable)\n"
+                f"- No credit card required; get a key at [console.groq.com](https://console.groq.com)\n"
+                f"- Without a key, the app runs fully on a local deterministic evidence-based fallback — clearly labeled as such wherever it's shown."
             )
 
         # Expandable: App Sharing & Deployment Guide
-        with st.expander("🚀 How to Share This App"):
+        with st.expander("Deployment Options"):
             st.markdown(
-                "**Deployment Options:**\n\n"
-                "1. **Streamlit Community Cloud (Free)**:\n"
-                "   - Push repo to GitHub\n"
-                "   - Connect at [share.streamlit.io](https://share.streamlit.io)\n"
-                "   - 1-Click public or password-protected URL\n\n"
-                "2. **Render.com (Free Tier)**:\n"
-                "   - Connect repo, set build command: `pip install -r requirements.txt`\n"
-                "   - Start command: `streamlit run app.py --server.port $PORT`\n\n"
-                "3. **Docker Container**:\n"
-                "   - Built-in `Dockerfile` ready for internal server hosting"
+                "1. **Streamlit Community Cloud**: push to GitHub, connect at [share.streamlit.io](https://share.streamlit.io)\n"
+                "2. **Render.com**: build command `pip install -r requirements.txt`, "
+                "start command `streamlit run app.py --server.port $PORT`\n"
+                "3. **Docker**: `Dockerfile` included for internal server hosting"
             )
 
         # Expandable: Significant Unaddressed Prediction Drivers
-        with st.expander("⚠️ Critical Missing Signals"):
+        with st.expander("Signals Not Yet Integrated"):
             st.markdown(
-                "**7 Drivers for ERP Integration:**\n\n"
-                "1. **Open POs**: In-transit stock is currently invisible.\n"
-                "2. **Promotional Calendar**: Planned commercial sales spikes.\n"
-                "3. **Supplier Reliability**: Vendor-specific on-time delivery rates.\n"
-                "4. **Weather & Festivities**: Holiday FMCG demand multipliers.\n"
-                "5. **Cross-SKU Cannibalization**: Product substitution effects.\n"
-                "6. **Minimum Order Quantities (MOQ)**: Supplier batch constraints.\n"
-                "7. **Shelf Life / Expiration**: Spoilage risk on perishable inventory."
+                "1. **Open POs**: in-transit stock is currently invisible.\n"
+                "2. **Promotional calendar**: planned commercial sales spikes.\n"
+                "3. **Supplier reliability**: vendor-specific on-time delivery rates.\n"
+                "4. **Holiday/seasonal calendar**: demand shifts beyond day-of-week seasonality.\n"
+                "5. **Cross-SKU substitution**: product substitution effects.\n"
+                "6. **Minimum order quantities (MOQ)**: supplier batch constraints.\n"
+                "7. **Shelf life/expiration**: spoilage risk on perishable inventory."
             )
 
     # Top Hero Banner & Primary Workspace Router
@@ -206,8 +198,7 @@ def run_app() -> None:
     st.markdown(
         f"<div class='footer-note'>"
         f"Signal Early Warning System · Data: {meta['date_min']} to {meta['date_max']} · "
-        f"{meta['rows']:,} rows · Stochastic Lead-Time Variance & DOW Seasonality Enabled · "
-        f"Groq Llama-3.3-70B / Local Grounded Engine."
+        f"{meta['rows']:,} rows · Groq ({DEFAULT_GROQ_MODEL}) with local grounded fallback."
         f"</div>",
         unsafe_allow_html=True,
     )

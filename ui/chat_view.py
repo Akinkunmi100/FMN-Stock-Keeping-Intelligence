@@ -15,17 +15,16 @@ from ai.grounding import answer_agentic_question
 
 def render_chat_view(scores: pd.DataFrame) -> None:
     """Render the conversational diagnostic Q&A interface."""
-    st.markdown("### 💬 Ask the Supply Chain Analyst")
-    st.caption("Ask natural language questions about SKUs, categories, Class A drivers, or the attention queue. Powered by free Groq Llama-3.3-70B with verified local grounding.")
+    st.markdown("### Ask the Supply Chain Analyst")
+    st.caption("Ask about SKUs, categories, Class A drivers, or the attention queue. Answers are retrieved from the current dataset, not generated from general knowledge.")
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = [
             {
                 "role": "assistant",
                 "content": (
-                    "Hello! I am your AI Supply Chain Diagnostic Assistant. "
-                    "You can ask me about flagged SKUs, recommended purchase order quantities, "
-                    "exact order-by deadlines, Class A items at risk, or specific categories like Beverages or Snacks."
+                    "Ask about flagged SKUs, recommended purchase order quantities, "
+                    "order-by deadlines, Class A items at risk, or a specific category such as Beverages or Snacks."
                 ),
             }
         ]
@@ -33,20 +32,29 @@ def render_chat_view(scores: pd.DataFrame) -> None:
     # ─────────────────────────────────────────────────────────────────────────
     # 1. QUICK SUGGESTION CHIPS
     # ─────────────────────────────────────────────────────────────────────────
+    # SKU references are drawn from the live scores DataFrame rather than
+    # hardcoded, so a chip never asks about a SKU that isn't actually in its
+    # claimed state in the current data (e.g. "why is X flagged" for a SKU
+    # that's actually on track this run).
+    flagged_skus = scores[scores["urgency"] > 0]
+    example_flagged = flagged_skus.iloc[0]["sku_id"] if not flagged_skus.empty else scores.iloc[0]["sku_id"]
+    on_track_skus = scores[scores["bucket"] == "On track"]
+    example_order_qty = on_track_skus.iloc[0]["sku_id"] if not on_track_skus.empty else scores.iloc[-1]["sku_id"]
+
     st.markdown("<div class='eyebrow'>Quick Questions</div>", unsafe_allow_html=True)
     c_chip1, c_chip2, c_chip3, c_chip4 = st.columns(4)
     with c_chip1:
         if st.button("Which SKUs need attention this week?", use_container_width=True):
             st.session_state.user_query = "Which SKUs need attention this week?"
     with c_chip2:
-        if st.button("Why is SKU-1004 flagged?", use_container_width=True):
-            st.session_state.user_query = "Why is SKU-1004 flagged?"
+        if st.button(f"Why is {example_flagged} flagged?", use_container_width=True):
+            st.session_state.user_query = f"Why is {example_flagged} flagged?"
     with c_chip3:
         if st.button("Show high-priority Class A items", use_container_width=True):
             st.session_state.user_query = "Show high-priority Class A items"
     with c_chip4:
-        if st.button("How much to order for SKU-1002?", use_container_width=True):
-            st.session_state.user_query = "How much to order for SKU-1002?"
+        if st.button(f"How much to order for {example_order_qty}?", use_container_width=True):
+            st.session_state.user_query = f"How much to order for {example_order_qty}?"
 
     st.divider()
 
@@ -75,5 +83,5 @@ def render_chat_view(scores: pd.DataFrame) -> None:
                 response = answer_agentic_question(query, scores, st.session_state.chat_messages)
                 st.markdown(response.text)
                 if response.warning:
-                    st.caption(f"ℹ️ {response.warning}")
+                    st.caption(response.warning)
                 st.session_state.chat_messages.append({"role": "assistant", "content": response.text})

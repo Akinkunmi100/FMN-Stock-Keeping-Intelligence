@@ -1,8 +1,8 @@
 """
-ui/hero.py — Executive Hero Banner & KPI Summary Metrics
-========================================================
-Renders the top-level command banner with a premium dark gradient background
-and high-visibility KPI cards with color-coded severity indicators.
+ui/hero.py — Status Header & KPI Summary Metrics
+=================================================
+Renders the top-level status bar and high-level KPI cards with color-coded
+severity indicators.
 """
 
 from __future__ import annotations
@@ -12,17 +12,14 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from config import COLORS
+from config import ABC_THRESHOLDS, COLORS
 
 
 def render_hero_banner(meta: dict[str, Any], scores: pd.DataFrame) -> None:
     """
-    Render the top visual banner summarizing system status.
-
-    The dark gradient hero provides instant situational awareness:
-    - Total flagged SKU count vs. portfolio size
-    - Critical severity count (red emphasis)
-    - Class A high-priority items at risk
+    Render the top status bar summarizing portfolio state at a glance:
+    total flagged SKU count vs. portfolio size, critical severity count,
+    and Class-A-at-risk count.
     """
     flagged = scores[scores["urgency"] > 0]
     critical = scores[scores["severity"] == "Critical"]
@@ -31,13 +28,13 @@ def render_hero_banner(meta: dict[str, Any], scores: pd.DataFrame) -> None:
 
     st.markdown(
         f"<div class='hero'>"
-        f"<div class='eyebrow' style='color: rgba(199,238,92,0.6);'>SUPPLY CHAIN CONTROL ROOM · {date_str}</div>"
-        f"<h1>Know what needs<br>action next.</h1>"
-        f"<div class='hero-note'>Ranked early warning signals combining seasonality-adjusted demand velocity, "
-        f"stochastic lead-time variance, exact order-by deadlines, and Recommended Order Quantities (ROQ).</div>"
+        f"<div class='eyebrow' style='color: rgba(245,246,243,0.55);'>SUPPLY CHAIN CONTROL ROOM · AS OF {date_str}</div>"
+        f"<h1>Portfolio Early-Warning Summary</h1>"
+        f"<div class='hero-note'>Ranked stockout and overstock risk combining seasonality-adjusted demand velocity, "
+        f"stochastic lead-time variance, exact order-by deadlines, and recommended order quantities.</div>"
         f"<div class='hero-stamp'>"
-        f"{len(flagged)} OF {len(scores)} SKUS FLAGGED · "
-        f"{len(critical)} CRITICAL · "
+        f"{len(flagged)} OF {len(scores)} SKUS FLAGGED &nbsp;·&nbsp; "
+        f"{len(critical)} CRITICAL &nbsp;·&nbsp; "
         f"{len(class_a_flagged)} CLASS-A AT RISK"
         f"</div>"
         f"</div>",
@@ -91,7 +88,7 @@ def render_kpi_cards(scores: pd.DataFrame) -> None:
             f"<div class='metric' style='border-top-color: {COLORS['abc_a']};'>"
             f"<div class='metric-label'>Class A at Risk</div>"
             f"<div class='metric-value' style='color: {COLORS['abc_a']};'>{len(class_a_flagged)}</div>"
-            f"<div class='metric-sub'>top 70% volume drivers</div>"
+            f"<div class='metric-sub'>top {ABC_THRESHOLDS['A']:.0%} volume drivers</div>"
             f"</div>",
             unsafe_allow_html=True,
         )

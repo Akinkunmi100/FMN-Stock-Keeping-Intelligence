@@ -58,9 +58,14 @@ def clean_and_deduplicate(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["closing_stock"] = pd.to_numeric(df["closing_stock"], errors="coerce")
     df["lead_time_days"] = pd.to_numeric(df["lead_time_days"], errors="coerce")
 
-    # Aggregate duplicates
+    # Aggregate duplicates.
+    # units_sold uses sum(min_count=1) rather than plain "sum": pandas' default
+    # sum() treats an all-NaN group as 0.0, which would silently convert a
+    # genuinely missing observation into a verified zero-sales day before
+    # interpolate_demand_gaps() ever sees it. min_count=1 preserves NaN when
+    # every value in the group is missing.
     agg_rules = {
-        "units_sold": "sum",
+        "units_sold": lambda s: s.sum(min_count=1),
         "units_received": "sum",
         "closing_stock": "last",
         "lead_time_days": "first",
@@ -99,7 +104,30 @@ def interpolate_demand_gaps(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. LEAD TIME SANITIZATION
+# 4. CLOSING STOCK GAP HANDLING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fill_closing_stock_gaps(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Carry the last known on-hand count forward across a missing closing_stock
+    reading within a SKU's series.
+
+    A missing closing_stock value means the count wasn't recorded that day,
+    not that inventory reset to zero or is unknown going forward — physical
+    stock doesn't vanish between counts. Forward-fill is bounded to inside
+    the series (no fabricating a stock level before the first real reading).
+    Preserves the raw value in 'closing_stock_raw' for audit purposes.
+    """
+    df = df.copy()
+    df["closing_stock_raw"] = df["closing_stock"].copy()
+    df["closing_stock"] = df.groupby("sku_id", group_keys=False)["closing_stock"].apply(
+        lambda s: s.ffill()
+    ).reset_index(level=0, drop=True)
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. LEAD TIME SANITIZATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 def sanitize_lead_times(df: pd.DataFrame) -> pd.DataFrame:
@@ -121,7 +149,7 @@ def sanitize_lead_times(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. ABC PARETO CLASSIFICATION
+# 6. ABC PARETO CLASSIFICATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_abc_pareto(df: pd.DataFrame) -> dict[str, str]:
@@ -152,7 +180,7 @@ def compute_abc_pareto(df: pd.DataFrame) -> dict[str, str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. CYCLICAL DAY-OF-WEEK SEASONALITY
+# 7. CYCLICAL DAY-OF-WEEK SEASONALITY
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_dow_seasonality(df: pd.DataFrame) -> dict[int, float]:
@@ -179,7 +207,7 @@ def compute_dow_seasonality(df: pd.DataFrame) -> dict[int, float]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. CATEGORY PRIORS (CV & KURTOSIS)
+# 8. CATEGORY PRIORS (CV & KURTOSIS)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_category_priors(df: pd.DataFrame) -> tuple[dict[str, float], dict[str, float]]:
@@ -216,7 +244,7 @@ def compute_category_priors(df: pd.DataFrame) -> tuple[dict[str, float], dict[st
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. MASTER PIPELINE LOADER
+# 9. MASTER PIPELINE LOADER
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_and_prepare_dataset(csv_path: str | Path) -> tuple[
@@ -231,15 +259,17 @@ def load_and_prepare_dataset(csv_path: str | Path) -> tuple[
     1. Reads CSV and parses dates
     2. Cleans column names & aggregates duplicates
     3. Interpolates short demand gaps
-    4. Sanitizes lead times
-    5. Computes ABC Pareto tiers
-    6. Computes cyclical seasonality
-    7. Computes category statistical priors
+    4. Forward-fills missing closing_stock readings
+    5. Sanitizes lead times
+    6. Computes ABC Pareto tiers
+    7. Computes cyclical seasonality
+    8. Computes category statistical priors
     """
     raw = pd.read_csv(csv_path, parse_dates=["date"])
     deduped = clean_and_deduplicate(raw)
     interpolated = interpolate_demand_gaps(deduped)
-    sanitized = sanitize_lead_times(interpolated)
+    stock_filled = fill_closing_stock_gaps(interpolated)
+    sanitized = sanitize_lead_times(stock_filled)
 
     abc_map = compute_abc_pareto(sanitized)
     dow_multipliers = compute_dow_seasonality(sanitized)

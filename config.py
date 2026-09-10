@@ -38,12 +38,34 @@ SERVICE_LEVEL_Z = {
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. INVENTORY POLICY & THRESHOLDS
 # ─────────────────────────────────────────────────────────────────────────────
+# 56 days = 8 full weekly cycles. Below that, a per-SKU CV/variance estimate
+# is dominated by whichever 1-2 unusual days happened to land in the window;
+# 8 cycles is the point where day-of-week noise starts averaging out enough
+# to trust the estimate for safety-stock sizing. See docs/DECISIONS.md.
 MIN_HISTORY_DAYS_ESTABLISHED = 56  # Minimum recorded days to qualify as established SKU
+
+# Observed supplier lead times in this dataset range 3-14 days (median 7).
+# ESTABLISHED_COVERAGE_LIMIT = 2x the longest observed lead time (14d): a
+# full extra replenishment cycle of buffer is allowed to sit as working
+# capital before it's flagged as overstock, on the (established-SKU) belief
+# that current demand velocity is trustworthy.
+# NEW_SKU_COVERAGE_LIMIT is tighter (1.5x the max lead time, not 2x) because
+# a new SKU's velocity estimate rests on ~2 weeks of data and isn't equally
+# trustworthy — an unnecessary overstock review a few days early costs far
+# less than discovering 2 full cycles of capital tied up in an item whose
+# early demand read turns out to be wrong.
 NEW_SKU_COVERAGE_LIMIT = 21.0      # Maximum target days of supply for ramp-up SKUs
 ESTABLISHED_COVERAGE_LIMIT = 28.0  # Maximum target days of supply for established SKUs
 
 # Demand trend lookback window
 MIN_TREND_WINDOW_DAYS = 7
+# Per-SKU CV in this dataset typically runs ~0.25-0.37 (daily-level noise).
+# For a windowed mean of >=7 days, that implies a standard error on the
+# windowed mean of roughly CV/sqrt(7) ~= 10-14%. A 15% shift is just past
+# one standard error of that noise floor — enough to be a real signal
+# rather than day-to-day jitter, while still loose on purpose: this only
+# drives "Monitor closely" (urgency=1, no order forced), so a false
+# positive here just means an operator glances at a SKU one extra time.
 DEMAND_SURGE_THRESHOLD_PCT = 0.15  # 15% demand acceleration triggers proactive monitor flag
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -64,7 +86,17 @@ ABC_RISK_MULTIPLIERS = {
     "C": 0.85,  # Dampened urgency for slow-moving tail SKUs
 }
 
-# Categorical severity cutoffs for the 0–100 composite risk score
+# Categorical severity cutoffs for the 0-100 composite risk score.
+# 50/30 roughly quarter the scale, reserving the top half for anything
+# already inside its reorder window (coverage_depletion is the single
+# heaviest weight at 35%, so it dominates once a SKU crosses that line).
+# KNOWN CALIBRATION GAP: on this dataset, a SKU that is already OVERDUE
+# with same-day stockout (e.g. SKU-1010: 0.6 days coverage, order-by date
+# already passed) still only scores ~74 and lands in "High," not
+# "Critical" — the 75 cutoff is calibrated tighter than the worst cases
+# actually seen. Left as-is rather than silently lowered, since changing
+# it changes which SKUs are labeled Critical throughout the app and export;
+# flagged here and in docs/DECISIONS.md rather than fixed unilaterally.
 SEVERITY_THRESHOLDS = {
     "Critical": 75.0,  # Immediate stockout risk or broken safety stock
     "High": 50.0,      # Urgent replenishment planning needed
@@ -75,34 +107,34 @@ SEVERITY_THRESHOLDS = {
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. UI BRANDING, TYPOGRAPHY & COLOR SYSTEM
 # ─────────────────────────────────────────────────────────────────────────────
-# Visual language mapping statuses and severities to cohesive colors
+# Functional color system — every color here encodes a specific operational
+# meaning (severity, ABC tier) and is used exactly where that meaning applies.
+# No decorative/accent colors that exist purely for visual flourish.
 COLORS = {
     # Severity & Risk Colors
-    "critical": "#E74C3C",  # Vibrant Red
-    "critical_bg": "#FDEDEC",
-    "high": "#E67E22",      # Energetic Amber/Orange
-    "high_bg": "#FEF5E7",
-    "medium": "#F1C40F",    # Cautionary Yellow
-    "medium_bg": "#FEF9E7",
-    "low": "#27AE60",       # Calming Forest Green
-    "low_bg": "#EAFAF1",
-    "overstock": "#2980B9", # Corporate Cyan/Blue
-    "overstock_bg": "#EBF5FB",
+    "critical": "#B3261E",
+    "critical_bg": "#FBEAE9",
+    "high": "#B0530A",
+    "high_bg": "#FCF1E4",
+    "medium": "#8A6D00",
+    "medium_bg": "#FBF6DE",
+    "low": "#1E6B42",
+    "low_bg": "#E7F3EC",
+    "overstock": "#2E5C8A",
+    "overstock_bg": "#E9F0F7",
 
     # ABC Tier Colors
-    "abc_a": "#1E8449",     # Emerald Green
-    "abc_b": "#D4AC0D",     # Mustard Yellow
-    "abc_c": "#7F8C8D",     # Slate Grey
+    "abc_a": "#1E6B42",
+    "abc_b": "#8A6D00",
+    "abc_c": "#5B6560",
 
     # Core Theme Palette
-    "ink": "#17211F",       # Deep Charcoal
-    "paper": "#F6F7F3",     # Off-white warm background
-    "card_bg": "#FFFFFF",   # Crisp White for cards
-    "line": "#DFE5DE",      # Soft border grey
-    "muted": "#69736F",     # Muted text grey
-    "accent_lime": "#C7EE5C",
-    "accent_coral": "#F2A188",
-    "accent_blue": "#9ED2DC",
+    "ink": "#1C2420",       # Deep charcoal — primary text and headers
+    "paper": "#F5F6F3",     # Off-white page background
+    "card_bg": "#FFFFFF",
+    "line": "#DEE3DD",      # Border grey
+    "muted": "#5B6560",     # Secondary text grey
+    "chart_series": "#4A7A87",  # Neutral slate-teal for non-severity chart series (demand line, etc.)
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

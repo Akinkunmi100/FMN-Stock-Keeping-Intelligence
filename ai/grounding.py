@@ -64,26 +64,159 @@ def build_sku_facts(row: pd.Series) -> dict[str, Any]:
 # 2. NUMERICAL TOKEN VALIDATION (ANTI-HALLUCINATION)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_DASH_VARIANTS = str.maketrans({
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-",
+})
+
+
+def _normalize_dashes(text: str) -> str:
+    """
+    Map Unicode dash/hyphen variants (hyphen, non-breaking hyphen, en/em dash)
+    to a plain ASCII "-". Groq's Llama output typesets dates and compound
+    words with these (e.g. "2026‑06‑26", "order‑by") rather than
+    ASCII "-", which would otherwise make an ISO date fail to match its
+    plain-ASCII counterpart in the evidence dict.
+    """
+    return text.translate(_DASH_VARIANTS)
+
+
+_THOUSANDS_GROUPING = ",  "  # comma, narrow no-break space, no-break space
+
+
 def extract_number_tokens(text: str) -> list[float]:
-    """Extract all standalone numerical values from a text string."""
-    matches = re.findall(r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?", text)
-    return [float(x.replace(",", "")) for x in matches]
+    """
+    Extract all standalone numerical values from a text string.
+
+    Groq's Llama output formats large numbers with U+202F (narrow no-break
+    space) as a thousands separator, e.g. "2 190.4" for 2190.4 — not a
+    plain ASCII space, so this doesn't risk merging two unrelated numbers
+    that happen to sit next to each other in prose (which uses a normal
+    space). Without treating it as a grouping character, "2 190.4"
+    would be misread as two separate numbers, 2 and 190.4, neither of which
+    matches the real value.
+    """
+    matches = re.findall(rf"(?<![A-Za-z])\d[\d{_THOUSANDS_GROUPING}]*(?:\.\d+)?", text)
+    cleaned = [re.sub(f"[{_THOUSANDS_GROUPING}]", "", x) for x in matches]
+    return [float(x) for x in cleaned]
 
 
-def validate_grounded_numbers(text: str, facts: dict[str, Any]) -> bool:
+def _collect_numeric_candidates(obj: Any) -> list[float]:
     """
-    Verify that every number cited in the LLM response is present in the factual evidence.
-    Permits reasonable rounding (within 1% or 0.5 units).
+    Recursively collect numeric values from a nested evidence dict/list —
+    both structured numeric leaves (risk_score=74.6) and numbers embedded in
+    string fields (timing_urgency_msg="...(8 days window)"). The latter
+    matters because a live response is free to paraphrase a string field
+    ("providing an 8-day safety window") rather than quote it verbatim, and
+    that number is still genuinely grounded even though it isn't its own
+    top-level fact.
     """
+    found: list[float] = []
+    if isinstance(obj, bool):
+        return found
+    if isinstance(obj, (int, float)):
+        found.append(float(obj))
+    elif isinstance(obj, str):
+        found.extend(extract_number_tokens(obj))
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            found.extend(_collect_numeric_candidates(v))
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            found.extend(_collect_numeric_candidates(v))
+    return found
+
+
+def _collect_digit_bearing_strings(obj: Any) -> set[str]:
+    """
+    Recursively collect string leaf values from evidence that contain a digit
+    — SKU codes ("SKU-1010"), ISO dates, badges ("ORDER IN 3D"), the "method"
+    label ("full-history baseline (141 obs...)"), etc. These are identifiers
+    or labels being echoed back, not numeric claims about the SKU, so they
+    must not be tokenized as citable figures. Only an exact verbatim
+    substring match against the model's own text is stripped, so a
+    paraphrased mention of e.g. timing_urgency_msg is left untouched and can
+    still be checked against the real numeric facts.
+    """
+    found: set[str] = set()
+    if isinstance(obj, str):
+        if any(ch.isdigit() for ch in obj):
+            found.add(obj)
+        found.update(re.findall(r"\d{4}-\d{2}-\d{2}", obj))
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            found.update(_collect_digit_bearing_strings(v))
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            found.update(_collect_digit_bearing_strings(v))
+    return found
+
+
+def validate_grounded_numbers(text: str, facts: Any) -> bool:
+    """
+    Verify that every number cited in the LLM response is traceable to the
+    factual evidence actually passed into the prompt. Permits reasonable
+    rounding (within 1% or 0.5 units).
+
+    `facts` may be a flat dict (single-SKU evidence, e.g. explain_sku) or a
+    nested dict/list (multi-SKU payloads, e.g. the category/Class-A/portfolio
+    Q&A routes) — numeric leaves are collected recursively either way.
+
+    `facts` should include the system prompt's own instructions text
+    alongside the evidence payload (e.g. `[instructions, facts]`) — the
+    instructions we write ourselves are trusted, not model output, and can
+    legitimately contain a number (e.g. "top 70% volume" in the Class-A
+    route's prompt) that the model is entitled to echo back without that
+    being an invented figure.
+
+    Three adjustments versus a naive digit scan, all required for this to be
+    usable as an actual gate rather than dead code (a fourth — reading
+    numbers embedded inside evidence strings, not just top-level numeric
+    fields — lives in _collect_numeric_candidates' own docstring):
+    - Digit-bearing identifier/label strings already present verbatim in the
+      evidence (the SKU code "SKU-1010", ISO dates, timing badges like
+      "ORDER IN 3D") are stripped out of the text before number-tokenizing,
+      so e.g. citing "SKU-1010" doesn't get read as the bare number 1010
+      and flagged as an unverifiable figure.
+    - Unicode dash variants (Groq's output typesets dates/compounds with a
+      non-breaking hyphen, e.g. "2026‑06‑26") are normalized to ASCII "-"
+      first, so those strings actually match their evidence counterparts.
+    - Comparisons use absolute value on both sides: a negative trend like
+      demand_change_percent=-37.0 is written in prose as "-37%" or "37%
+      decline," and extract_number_tokens never captures a leading minus
+      sign, so the unsigned token must be compared against |candidate|.
+    """
+    text = _normalize_dashes(text)
+    for id_str in _collect_digit_bearing_strings(facts):
+        text = text.replace(_normalize_dashes(id_str), "")
+
     allowed_candidates: list[float] = []
-    for val in facts.values():
-        if isinstance(val, (int, float)):
-            allowed_candidates.extend([float(val), round(float(val), 0), round(float(val), 1)])
+    for val in _collect_numeric_candidates(facts):
+        mag = abs(val)
+        allowed_candidates.extend([mag, round(mag, 0), round(mag, 1)])
 
     for number in extract_number_tokens(text):
-        if not any(abs(number - cand) <= max(0.5, abs(cand) * 0.01) for cand in allowed_candidates):
+        if not any(abs(number - cand) <= max(0.5, cand * 0.01) for cand in allowed_candidates):
             return False
     return True
+
+
+_UNGROUNDED_WARNING = (
+    "Live model response cited a figure that couldn't be verified against the "
+    "retrieved data — showing the local grounded summary instead."
+)
+
+
+def _reject_if_ungrounded(result: LLMResult, evidence: Any) -> LLMResult:
+    """
+    Gate a live LLM result through validate_grounded_numbers. A live response
+    that fails the check is replaced with an explicit non-live rejection (not
+    just silently ignored), so every call site's fallback path carries the
+    same clear warning explaining why the user is seeing the local
+    deterministic answer instead of a live one.
+    """
+    if result.live and result.text and not validate_grounded_numbers(result.text, evidence):
+        return LLMResult(text="", live=False, warning=_UNGROUNDED_WARNING)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -93,9 +226,12 @@ def validate_grounded_numbers(text: str, facts: dict[str, Any]) -> bool:
 def explain_sku(row: pd.Series) -> LLMResult:
     """
     Generate a grounded diagnostic explanation for a single SKU.
-    
-    If Groq is enabled and returns a response, uses Groq Llama-3.3-70B.
-    Otherwise, builds a deterministic evidence-based explanation.
+
+    If Groq is enabled and returns a grounded response, uses that (the
+    specific model that answered is recorded on the returned LLMResult, not
+    assumed — config.py can point at any Groq model, with fallbacks tried in
+    order if the primary is unavailable). Otherwise, builds a deterministic
+    evidence-based explanation.
     """
     facts = build_sku_facts(row)
     instructions = (
@@ -111,6 +247,7 @@ def explain_sku(row: pd.Series) -> LLMResult:
         {"role": "system", "content": instructions},
         {"role": "user", "content": user_content},
     ])
+    result = _reject_if_ungrounded(result, [instructions, facts])
 
     if result.live and result.text:
         return result
@@ -168,7 +305,7 @@ def answer_agentic_question(
                 "recommended order quantity (ROQ), order-by date, and plain-language action."
             )
             prompt = [{"role": "system", "content": instructions}, {"role": "user", "content": json.dumps({"sku_evidence": facts})}]
-            result = execute_groq_chat(prompt)
+            result = _reject_if_ungrounded(execute_groq_chat(prompt), [instructions, facts])
             if result.live and result.text:
                 return result
 
@@ -204,6 +341,7 @@ def answer_agentic_question(
         }
         instructions = "Summarize the inventory health, stockout risks, and procurement needs for the requested category using only the evidence."
         result = execute_groq_chat([{"role": "system", "content": instructions}, {"role": "user", "content": json.dumps(payload)}])
+        result = _reject_if_ungrounded(result, [instructions, payload])
         if result.live and result.text:
             return result
 
@@ -231,6 +369,7 @@ def answer_agentic_question(
         }
         instructions = "Detail which high-priority Class A SKUs (top 70% volume) are at risk and need immediate procurement action."
         result = execute_groq_chat([{"role": "system", "content": instructions}, {"role": "user", "content": json.dumps(payload)}])
+        result = _reject_if_ungrounded(result, [instructions, payload])
         if result.live and result.text:
             return result
 
@@ -264,6 +403,7 @@ def answer_agentic_question(
         "citing specific stock levels, days of coverage, exact order-by dates, and recommended order quantities."
     )
     result = execute_groq_chat([{"role": "system", "content": instructions}, {"role": "user", "content": json.dumps(payload)}])
+    result = _reject_if_ungrounded(result, [instructions, payload])
     if result.live and result.text:
         return result
 

@@ -200,7 +200,7 @@ def send_slack_alert(
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": f"🚨 Supply Chain Alert: {digest['critical_count']} Critical SKUs",
+                "text": f"Supply Chain Alert: {digest['critical_count']} Critical SKUs",
                 "emoji": True,
             },
         },

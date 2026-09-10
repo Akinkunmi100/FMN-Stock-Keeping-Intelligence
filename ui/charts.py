@@ -52,8 +52,8 @@ def build_portfolio_risk_donut(scores: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(
         title=dict(text="<b>Portfolio Risk Distribution</b>", font=dict(family="Manrope", size=14)),
-        margin=dict(l=10, r=10, t=40, b=10),
-        height=260,
+        margin=dict(l=10, r=10, t=45, b=15),
+        height=300,
         showlegend=False,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -91,8 +91,8 @@ def build_abc_pareto_bar(scores: pd.DataFrame) -> go.Figure:
         title=dict(text="<b>Daily Volume by ABC Pareto Tier</b>", font=dict(family="Manrope", size=14)),
         yaxis=dict(title="Daily Demand (Units)", showgrid=True, gridcolor=COLORS["line"]),
         xaxis=dict(title=""),
-        margin=dict(l=10, r=10, t=40, b=10),
-        height=260,
+        margin=dict(l=10, r=10, t=45, b=15),
+        height=300,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
     )
@@ -368,9 +368,9 @@ def build_coverage_countdown_bar(flagged_df: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         title=dict(text="<b>Stockout Countdown vs. Replenishment Lead Time</b>", font=dict(family="Manrope", size=14)),
         xaxis=dict(title="Days", showgrid=True, gridcolor=COLORS["line"]),
-        yaxis=dict(title=""),
-        margin=dict(l=20, r=20, t=40, b=20),
-        height=320,
+        yaxis=dict(title="", automargin=True),
+        margin=dict(l=20, r=20, t=50, b=20),
+        height=340,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",

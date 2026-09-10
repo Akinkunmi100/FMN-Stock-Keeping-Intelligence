@@ -36,7 +36,7 @@ from ai.llm_client import LLMResult
 from ui.attention_queue import render_attention_queue
 from ui.backtest_view import render_backtest_view
 from ui.chat_view import render_chat_view
-from ui.hero import render_hero_banner, render_kpi_cards
+from ui.hero import render_hero_banner
 from ui.sku_detail import render_sku_detail
 from ui.styles import get_application_css
 
@@ -182,7 +182,6 @@ def run_app() -> None:
     render_hero_banner(meta, scores)
 
     if workspace_view == "Attention queue":
-        render_kpi_cards(scores)
         render_attention_queue(scores, meta)
 
     elif workspace_view == "SKU detail":

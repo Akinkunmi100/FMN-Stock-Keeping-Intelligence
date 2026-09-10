@@ -4,6 +4,9 @@ ui/attention_queue.py — Triage Attention Queue, Timing Deadlines & Overstock P
 The primary operational workspace for inventory planners and procurement managers.
 Presents interactive charts, multi-criteria filtering, exact order-by deadlines,
 recommended order quantities (ROQ), overstock remediation playbooks, and CSV export.
+
+Filters at the top propagate to KPI cards, all charts, the data table,
+replenishment timing cards, and overstock playbooks.
 """
 
 from __future__ import annotations
@@ -19,41 +22,11 @@ from ui.charts import (
     build_coverage_countdown_bar,
     build_portfolio_risk_donut,
 )
+from ui.chat_view import render_inline_analyst
 
 
-def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
-    """Render the full attention queue view."""
-    flagged = scores[scores["urgency"] > 0]
-    overstock = scores[scores["bucket"] == "Overstock risk"]
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # 1. AT-A-GLANCE PORTFOLIO CHARTS
-    # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### Portfolio Health & Stockout Horizons")
-    c_chart1, c_chart2, c_chart3 = st.columns([1, 1, 1.4])
-    with c_chart1:
-        st.plotly_chart(build_portfolio_risk_donut(scores), use_container_width=True)
-    with c_chart2:
-        st.plotly_chart(build_abc_pareto_bar(scores), use_container_width=True)
-    with c_chart3:
-        if not flagged.empty:
-            st.plotly_chart(build_coverage_countdown_bar(flagged), use_container_width=True)
-        else:
-            st.info("No flagged SKUs currently at risk.")
-
-    st.divider()
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # 2. FILTER CONTROLS
-    # ─────────────────────────────────────────────────────────────────────────
-    st.markdown(
-        "<div class='queue-head'>"
-        "<h2>Ranked Attention Queue</h2>"
-        "<div class='section-note'>Prioritized by: Urgency Tier → Composite Risk Score → Stockout Deadline</div>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
+def _apply_filters(scores: pd.DataFrame, meta: dict[str, Any]) -> pd.DataFrame:
+    """Render filter controls and return the filtered DataFrame."""
     f1, f2, f3 = st.columns([2, 2, 2])
     with f1:
         selected_category = st.selectbox("Filter Category", ["All Categories"] + meta["categories"])
@@ -71,7 +44,6 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
             ],
         )
 
-    # Apply filters
     filtered = scores.copy()
     if selected_category != "All Categories":
         filtered = filtered[filtered["category"] == selected_category]
@@ -86,8 +58,101 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
     elif selected_status == "Overstock Risk":
         filtered = filtered[filtered["bucket"] == "Overstock risk"]
 
+    return filtered
+
+
+def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
+    """Render the full attention queue view with global filter propagation."""
+
     # ─────────────────────────────────────────────────────────────────────────
-    # 3. INTERACTIVE DATA TABLE
+    # 1. FILTERS AT THE TOP — affect everything below
+    # ─────────────────────────────────────────────────────────────────────────
+    st.markdown(
+        "<div class='queue-head'>"
+        "<h2>Ranked Attention Queue</h2>"
+        "<div class='section-note'>Prioritized by: Urgency Tier → Composite Risk Score → Stockout Deadline</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    filtered = _apply_filters(scores, meta)
+
+    flagged = filtered[filtered["urgency"] > 0]
+    overstock = filtered[filtered["bucket"] == "Overstock risk"]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 2. KPI CARDS (reflect active filters)
+    # ─────────────────────────────────────────────────────────────────────────
+    from ui.hero import render_kpi_cards
+    render_kpi_cards(filtered)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 3. SKUS AT RISK AT A GLANCE (DETAILS OF WHAT HAPPENED WITHOUT CLICKING)
+    # ─────────────────────────────────────────────────────────────────────────
+    st.markdown("### 🚨 SKUs at Risk at a Glance")
+    st.caption(
+        "Immediate operational triage: All flagged items in the active filter selection "
+        "with root-cause details of what happened, risk drivers, and recommended procurement actions."
+    )
+
+    if not flagged.empty:
+        for _, r in flagged.iterrows():
+            border_color = (
+                COLORS["critical"] if r["severity"] == "Critical" else
+                COLORS["high"] if r["severity"] == "High" else
+                COLORS["overstock"] if r["bucket"] == "Overstock risk" else
+                COLORS["medium"]
+            )
+            st.markdown(
+                f"<div class='action-card' style='border-left-color: {border_color}; margin-bottom: 0.85rem;'>"
+                f"<div style='display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.35rem;'>"
+                f"  <span class='action-card-title' style='color: {border_color}; margin: 0; font-size: 1.05rem;'>"
+                f"    <b>{r['sku_id']}</b> · {r['category']} (Risk {r['risk_score']:.0f}/100)"
+                f"  </span>"
+                f"  <div>"
+                f"    <span class='status status-{r['abc_class'].lower()}'>CLASS {r['abc_class']}</span> "
+                f"    <span class='status status-{r['severity'].lower()}'>{r['severity'].upper()}</span> "
+                f"    <span class='timing-badge timing-{r['timing_color']}'>{r['timing_urgency_badge']}</span>"
+                f"  </div>"
+                f"</div>"
+                f"<div style='font-size: 0.92rem; line-height: 1.45; margin: 0.4rem 0;'>"
+                f"  <b>What Happened:</b> {r['what_happened']}"
+                f"</div>"
+                f"<div style='font-size: 0.82rem; color: rgba(245,246,243,0.75); display: flex; gap: 1.4rem; flex-wrap: wrap; margin-top: 0.3rem;'>"
+                f"  <span>📦 <b>Stock:</b> {r['stock']:,.0f} u ({r['days_coverage']:.1f}d coverage)</span>"
+                f"  <span>⏱️ <b>Lead Time:</b> {r['lead_time']:.0f}d (±{r['lead_time_std']:.1f}d)</span>"
+                f"  <span>🎯 <b>Reorder Point:</b> {r['reorder_point']:,.0f} u</span>"
+                f"  <span>📅 <b>Order Deadline:</b> {r['order_by_date']}</span>"
+                f"  <span>🛒 <b>Reorder Quantity:</b> <b>{r['roq']:,.0f} units</b></span>"
+                f"</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.success("✅ No SKUs currently at risk under the active filter selection.")
+
+    st.divider()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 4. PORTFOLIO CHARTS (reflect active filters) — 2+1 layout to avoid overlap
+    # ─────────────────────────────────────────────────────────────────────────
+    st.markdown("### Portfolio Health & Stockout Horizons")
+
+    c_chart1, c_chart2 = st.columns(2)
+    with c_chart1:
+        st.plotly_chart(build_portfolio_risk_donut(filtered), use_container_width=True)
+    with c_chart2:
+        st.plotly_chart(build_abc_pareto_bar(filtered), use_container_width=True)
+
+    # Countdown bar — full width below
+    if not flagged.empty:
+        st.plotly_chart(build_coverage_countdown_bar(flagged), use_container_width=True)
+    else:
+        st.info("No flagged SKUs in the current filter selection.")
+
+    st.divider()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 5. INTERACTIVE DATA TABLE (same filters already applied)
     # ─────────────────────────────────────────────────────────────────────────
     display = filtered.copy()
     display["SKU"] = display["sku_id"]
@@ -103,24 +168,26 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
     display["Order By Date"] = display["order_by_date"].astype(str)
     display["Order Timing"] = display["timing_urgency_badge"]
     display["ROQ (Units)"] = display["roq"].map(lambda x: f"{x:,.0f}" if x > 0 else "—")
+    display["What Happened"] = display["what_happened"]
     display["Trend"] = display["trend_pct"].map(lambda x: f"{x:+.0%}")
     display["CV"] = display["cv"].map(lambda x: f"{x:.2f}")
 
     columns_to_show = [
         "SKU", "Category", "ABC", "Signal", "Severity", "Risk", "Stock",
         "Demand/Day", "Coverage", "Lead Time", "Order By Date", "Order Timing",
-        "ROQ (Units)", "Trend", "CV"
+        "ROQ (Units)", "What Happened", "Trend", "CV"
     ]
     st.dataframe(display[columns_to_show], width="stretch", hide_index=True, height=450)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 4. ONE-CLICK CSV EXPORT
+    # 6. ONE-CLICK CSV EXPORT
     # ─────────────────────────────────────────────────────────────────────────
     csv_df = filtered[[
         "sku_id", "category", "abc_class", "bucket", "severity", "risk_score",
         "stock", "daily_demand", "days_coverage", "lead_time", "stockout_date",
         "order_by_date", "timing_urgency_badge", "timing_urgency_msg",
-        "reorder_point", "safety_stock", "roq", "excess_units", "days_over_target"
+        "reorder_point", "safety_stock", "roq", "excess_units", "days_over_target",
+        "what_happened"
     ]].rename(columns={
         "sku_id": "SKU_ID", "category": "Category", "abc_class": "ABC_Class",
         "bucket": "Signal", "severity": "Severity", "risk_score": "Risk_Score",
@@ -130,7 +197,7 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
         "timing_urgency_badge": "Order_Urgency", "timing_urgency_msg": "Replenishment_Timing_Detail",
         "reorder_point": "Reorder_Point", "safety_stock": "Safety_Stock",
         "roq": "Recommended_Order_Qty", "excess_units": "Excess_Units",
-        "days_over_target": "Days_Over_Target"
+        "days_over_target": "Days_Over_Target", "what_happened": "Root_Cause_Explanation"
     })
     csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -143,34 +210,43 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
     st.divider()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 5. REPLENISHMENT TIMING PANEL (ANSWERS USER'S EXACT QUESTION)
+    # 7. REPLENISHMENT TIMING PANEL — ALL flagged SKUs, wrapped rows of 3
     # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### Replenishment Timing & Order Deadlines")
-    st.caption("Answers: 'When exactly must purchase orders be released before stockouts occur?'")
-
-    urgent_order_items = scores[scores["urgency"] >= 2].head(4)
+    urgent_order_items = filtered[filtered["urgency"] >= 2]
     if not urgent_order_items.empty:
-        col_t = st.columns(len(urgent_order_items))
-        for idx, (_, r) in enumerate(urgent_order_items.iterrows()):
-            with col_t[idx]:
-                border_color = COLORS["critical"] if r["timing_color"] == "critical" else COLORS["high"]
-                st.markdown(
-                    f"<div class='action-card' style='border-left-color: {border_color};'>"
-                    f"<div class='action-card-title'><b>{r['sku_id']}</b> ({r['category']})</div>"
-                    f"<span class='status status-{r['abc_class'].lower()}'>CLASS {r['abc_class']}</span> "
-                    f"<span class='timing-badge timing-{r['timing_color']}'>{r['timing_urgency_badge']}</span>"
-                    f"<p style='margin-top: 0.6rem;'>"
-                    f"• <b>Order-By Date:</b> {r['order_by_date']}<br>"
-                    f"• <b>Stockout Date:</b> {r['stockout_date']} ({r['days_coverage']:.1f}d supply)<br>"
-                    f"• <b>Supplier Lead Time:</b> {r['lead_time']:.0f} days<br>"
-                    f"• <b>Order Quantity (ROQ):</b> <b>{r['roq']:,.0f} units</b>"
-                    f"</p>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+        st.markdown("### Replenishment Timing & Order Deadlines")
+        st.caption(
+            f"All {len(urgent_order_items)} SKUs requiring immediate procurement action "
+            f"(filtered view). When exactly must purchase orders be released before stockouts occur?"
+        )
+
+        CARDS_PER_ROW = 3
+        items_list = list(urgent_order_items.iterrows())
+        for row_start in range(0, len(items_list), CARDS_PER_ROW):
+            row_batch = items_list[row_start:row_start + CARDS_PER_ROW]
+            cols = st.columns(CARDS_PER_ROW)
+            for idx, (_, r) in enumerate(row_batch):
+                with cols[idx]:
+                    border_color = COLORS["critical"] if r["timing_color"] == "critical" else COLORS["high"]
+                    st.markdown(
+                        f"<div class='action-card' style='border-left-color: {border_color};'>"
+                        f"<div class='action-card-title'><b>{r['sku_id']}</b> ({r['category']})</div>"
+                        f"<span class='status status-{r['abc_class'].lower()}'>CLASS {r['abc_class']}</span> "
+                        f"<span class='timing-badge timing-{r['timing_color']}'>{r['timing_urgency_badge']}</span>"
+                        f"<p style='margin-top: 0.6rem;'>"
+                        f"• <b>Order-By Date:</b> {r['order_by_date']}<br>"
+                        f"• <b>Stockout Date:</b> {r['stockout_date']} ({r['days_coverage']:.1f}d supply)<br>"
+                        f"• <b>Supplier Lead Time:</b> {r['lead_time']:.0f} days<br>"
+                        f"• <b>Order Quantity (ROQ):</b> <b>{r['roq']:,.0f} units</b>"
+                        f"</p>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+    st.divider()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 6. OVERSTOCK REMEDIATION PANEL (ANSWERS USER'S EXACT QUESTION)
+    # 7. OVERSTOCK REMEDIATION PANEL (filtered)
     # ─────────────────────────────────────────────────────────────────────────
     if not overstock.empty:
         st.markdown("### Overstock Diagnostics & Remediation Playbook")
@@ -197,3 +273,14 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
                 f"</div>",
                 unsafe_allow_html=True,
             )
+
+    st.divider()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 8. INLINE ASK THE ANALYST
+    # ─────────────────────────────────────────────────────────────────────────
+    render_inline_analyst(
+        scores=scores,  # full scores for Q&A context
+        context_key="attention_queue",
+        placeholder="Ask about the attention queue, flagged SKUs, or procurement needs…",
+    )

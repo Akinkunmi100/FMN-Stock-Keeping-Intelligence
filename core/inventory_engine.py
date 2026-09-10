@@ -69,10 +69,19 @@ def calculate_stochastic_safety_stock(
     base_z = SERVICE_LEVEL_Z.get(abc_class, 1.65)
     
     # Leptokurtic adjustment: add buffer if historical distribution has fat tails
+    if cat_kurtosis is None or np.isnan(cat_kurtosis):
+        cat_kurtosis = 1.0
     tail_multiplier = 1.0 + 0.08 * min(max(0.0, cat_kurtosis - 1.5), 3.0)
     effective_z = base_z * tail_multiplier
 
+    lead_time = max(1.0, 7.0 if (lead_time is None or np.isnan(lead_time)) else lead_time)
+    lead_time_std = max(0.0, 0.0 if (lead_time_std is None or np.isnan(lead_time_std)) else lead_time_std)
+    demand_std = max(0.0, 0.0 if (demand_std is None or np.isnan(demand_std)) else demand_std)
+    daily_demand = max(0.1, 0.1 if (daily_demand is None or np.isnan(daily_demand)) else daily_demand)
+
     if is_new:
+        if inherited_cat_cv is None or np.isnan(inherited_cat_cv) or inherited_cat_cv <= 0:
+            inherited_cat_cv = 0.30
         effective_demand_std = max(demand_std, inherited_cat_cv * daily_demand)
         variance = lead_time * (effective_demand_std ** 2) + (daily_demand ** 2) * (lead_time_std ** 2)
         ss = max(daily_demand * 0.50, effective_z * np.sqrt(max(0.0, variance)))
@@ -105,16 +114,29 @@ def calculate_order_timing(
         Order_By_Date = Stockout_Date - Lead_Time
         Days_Until_Order_Deadline = (Order_By_Date - Current_Date)
     """
-    if daily_demand <= 0:
+    if current_date is None:
+        calc_date = date.today()
+    elif isinstance(current_date, date) and not hasattr(current_date, "hour"):
+        calc_date = current_date
+    elif hasattr(current_date, "date"):
+        calc_date = current_date.date()
+    else:
+        calc_date = pd.to_datetime(current_date).date()
+
+    safe_stock = 0.0 if (stock is None or np.isnan(stock)) else float(stock)
+    safe_demand = 0.0 if (daily_demand is None or np.isnan(daily_demand)) else float(daily_demand)
+
+    if safe_demand <= 0:
         days_to_stockout = 999
     else:
-        days_to_stockout = int(np.floor(stock / daily_demand))
+        days_to_stockout = max(0, int(np.floor(safe_stock / safe_demand)))
 
-    stockout_date = current_date + timedelta(days=min(days_to_stockout, 365))
-    lt_days = max(1, int(round(lead_time)))
+    stockout_date = calc_date + timedelta(days=min(days_to_stockout, 365))
+    safe_lt = 7.0 if (lead_time is None or np.isnan(lead_time) or lead_time <= 0) else float(lead_time)
+    lt_days = max(1, int(round(safe_lt)))
     order_by_date = stockout_date - timedelta(days=lt_days)
     
-    days_until_deadline = (order_by_date - current_date).days
+    days_until_deadline = (order_by_date - calc_date).days
 
     if days_until_deadline < 0:
         urgency_badge = "OVERDUE"
@@ -167,8 +189,13 @@ def evaluate_overstock_diagnostics(
     - Days Over Maximum Target: Coverage beyond target maximum days
     - Holding Cost Impact: Estimated tied up working capital
     """
-    excess_units = max(0.0, round(stock - order_up_to, 0))
-    days_over_target = max(0.0, round(days_coverage - coverage_limit, 1))
+    safe_stock = 0.0 if (stock is None or np.isnan(stock)) else max(0.0, float(stock))
+    safe_out = 0.0 if (order_up_to is None or np.isnan(order_up_to)) else max(0.0, float(order_up_to))
+    safe_cov = 0.0 if (days_coverage is None or np.isnan(days_coverage)) else max(0.0, float(days_coverage))
+    safe_limit = 28.0 if (coverage_limit is None or np.isnan(coverage_limit) or coverage_limit <= 0) else float(coverage_limit)
+
+    excess_units = max(0.0, round(safe_stock - safe_out, 0))
+    days_over_target = max(0.0, round(safe_cov - safe_limit, 1))
 
     # Recommended action playbook for operations
     actions = [
@@ -207,10 +234,17 @@ def calculate_composite_risk(
     4. Proximity to reorder point threshold (20%)
     5. ABC priority multiplier (Class A +15%, Class C -15%)
     """
-    coverage_ratio = min(days_coverage / max(lead_time, 1.0), 3.0) / 3.0
-    trend_factor = min(abs(trend_pct), 0.50) / 0.50
-    volatility_factor = min(cv, 1.0)
-    rop_ratio = min(stock / max(reorder_point, 1.0), 2.0) / 2.0
+    safe_cov = 0.0 if (days_coverage is None or np.isnan(days_coverage)) else max(0.0, float(days_coverage))
+    safe_lt = 7.0 if (lead_time is None or np.isnan(lead_time) or lead_time <= 0) else float(lead_time)
+    safe_trend = 0.0 if (trend_pct is None or np.isnan(trend_pct)) else float(trend_pct)
+    safe_cv = 0.30 if (cv is None or np.isnan(cv)) else max(0.0, float(cv))
+    safe_stock = 0.0 if (stock is None or np.isnan(stock)) else max(0.0, float(stock))
+    safe_rop = 1.0 if (reorder_point is None or np.isnan(reorder_point) or reorder_point <= 0) else float(reorder_point)
+
+    coverage_ratio = max(0.0, min(safe_cov / safe_lt, 3.0)) / 3.0
+    trend_factor = max(0.0, min(abs(safe_trend), 0.50)) / 0.50
+    volatility_factor = max(0.0, min(safe_cv, 1.0))
+    rop_ratio = max(0.0, min(safe_stock / safe_rop, 2.0)) / 2.0
     abc_multiplier = ABC_RISK_MULTIPLIERS.get(abc_class, 1.0)
 
     base_score = (
@@ -235,7 +269,85 @@ def calculate_composite_risk(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. MASTER SKU SCORING ENGINE
+# 5. DIAGNOSTIC ROOT-CAUSE SYNTHESIZER ("WHAT HAPPENED")
+# ─────────────────────────────────────────────────────────────────────────────
+
+def synthesize_what_happened(
+    sku_id: str,
+    category: str,
+    abc_class: str,
+    bucket: str,
+    severity: str,
+    stock: float,
+    daily_demand: float,
+    days_coverage: float,
+    lead_time: float,
+    lead_time_std: float,
+    reorder_point: float,
+    safety_stock: float,
+    trend_pct: float,
+    cv: float,
+    roq: float,
+    order_by_date: Any,
+    stockout_date: Any,
+    days_until_deadline: int,
+    timing_urgency_badge: str,
+    timing_urgency_msg: str,
+    excess_units: float,
+    days_over_target: float,
+    coverage_limit: float,
+) -> str:
+    """
+    Synthesize an empirical, plain-language diagnostic explanation of what
+    happened to cause this SKU's current inventory posture and what immediate
+    action is required.
+    """
+    if bucket == "Order soon":
+        timing_clause = (
+            f"Order deadline breached {abs(days_until_deadline)}d ago ({order_by_date})"
+            if days_until_deadline < 0 else
+            f"Order deadline is TODAY ({order_by_date})"
+            if days_until_deadline == 0 else
+            f"Order deadline is in {days_until_deadline}d ({order_by_date})"
+        )
+        surge_clause = f" Recent demand accelerated {trend_pct:+.1%} (CV={cv:.2f})." if abs(trend_pct) >= 0.05 else ""
+        return (
+            f"Imminent stockout: Stock ({stock:,.0f} u) provides only {days_coverage:.1f}d supply against "
+            f"{lead_time:.0f}d lead time, breaching reorder point ({reorder_point:,.0f} u).{surge_clause} "
+            f"{timing_clause}. Projected stockout on {stockout_date}. "
+            f"Immediate action: release PO for {roq:,.0f} units."
+        )
+    elif bucket == "Plan replenishment":
+        surge_clause = f" Demand trend: {trend_pct:+.1%}." if abs(trend_pct) >= 0.05 else ""
+        return (
+            f"Replenishment trigger reached: Stock ({stock:,.0f} u) has fallen below reorder point "
+            f"({reorder_point:,.0f} u) with {days_coverage:.1f}d coverage approaching supplier lead time "
+            f"({lead_time:.0f}d).{surge_clause} Order-by deadline is {order_by_date}. "
+            f"Recommended action: prepare order for {roq:,.0f} units."
+        )
+    elif bucket == "Overstock risk":
+        return (
+            f"Excess inventory accumulation: On-hand stock ({stock:,.0f} u) provides {days_coverage:.1f}d of supply, "
+            f"exceeding target buffer by +{days_over_target:.1f} days (surplus of {excess_units:,.0f} units). "
+            f"Recent demand velocity: {daily_demand:,.1f} u/d (trend {trend_pct:+.1%}). "
+            f"Recommended action: freeze open orders and explore regional rebalancing."
+        )
+    elif bucket == "Monitor closely":
+        return (
+            f"Demand acceleration alert: Consumption velocity shifted {trend_pct:+.1%} over recent cycles "
+            f"(volatility CV={cv:.2f}). Current inventory provides {days_coverage:.1f}d coverage against "
+            f"{lead_time:.0f}d lead time. Recommended action: monitor daily consumption before ROP breach."
+        )
+    else:
+        return (
+            f"Healthy operational posture: Stock of {stock:,.0f} units provides {days_coverage:.1f}d coverage, "
+            f"comfortably above the {lead_time:.0f}d lead time and seasonal ROP buffer ({reorder_point:,.0f} u). "
+            f"No replenishment action required."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. MASTER SKU SCORING ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 def score_sku_inventory(
@@ -250,19 +362,43 @@ def score_sku_inventory(
     Full diagnostic evaluation of a single SKU's inventory posture.
     """
     group = sku_group.sort_values("date").reset_index(drop=True)
-    history_days = int((group["date"].max() - group["date"].min()).days + 1)
+    date_col = pd.to_datetime(group["date"])
+    history_days = int((date_col.max() - date_col.min()).days + 1)
     is_new = history_days < 56
-    lead_time = float(group["lead_time_used"].median())
-    stock = float(group.iloc[-1]["closing_stock"])
-    receipts_7d = float(group.tail(7)["units_received"].sum())
-    cat_clean = group.iloc[-1]["category_clean"]
-    cat_key = str(group.iloc[-1]["category_key"])
-    last_date = group.iloc[-1]["date"].date()
-    last_dow = int(group.iloc[-1]["date"].dayofweek)
+
+    if "lead_time_used" in group.columns:
+        raw_lt = group["lead_time_used"].median()
+    elif "lead_time_days" in group.columns:
+        valid_lt = group["lead_time_days"].dropna()
+        raw_lt = valid_lt.median() if len(valid_lt) > 0 else 7.0
+    else:
+        raw_lt = 7.0
+    lead_time = 7.0 if (pd.isna(raw_lt) or raw_lt <= 0) else float(raw_lt)
+
+    raw_stock = group.iloc[-1]["closing_stock"] if "closing_stock" in group.columns else 0.0
+    stock = 0.0 if pd.isna(raw_stock) else max(0.0, float(raw_stock))
+
+    receipts_7d = float(group.tail(7)["units_received"].sum()) if "units_received" in group.columns else 0.0
+    if pd.isna(receipts_7d):
+        receipts_7d = 0.0
+
+    cat_raw = group.iloc[-1]["category"] if "category" in group.columns else "General"
+    cat_clean = str(group.iloc[-1]["category_clean"]) if "category_clean" in group.columns else str(cat_raw).title()
+    cat_key = str(group.iloc[-1]["category_key"]) if "category_key" in group.columns else str(cat_raw).strip().lower()
+
+    last_dt = date_col.iloc[-1]
+    last_date = last_dt.date()
+    last_dow = int(last_dt.dayofweek)
 
     # Lead time variability
-    lt_series = group["lead_time_days"].dropna()
-    lead_time_std = float(lt_series.std(ddof=1)) if lt_series.nunique() > 1 else 0.0
+    lt_col = "lead_time_days" if "lead_time_days" in group.columns else ("lead_time_used" if "lead_time_used" in group.columns else None)
+    if lt_col:
+        lt_series = group[lt_col].dropna()
+        lead_time_std = float(lt_series.std(ddof=1)) if lt_series.nunique() > 1 else 0.0
+    else:
+        lead_time_std = 0.0
+    if pd.isna(lead_time_std):
+        lead_time_std = 0.0
 
     # Uncensored demand series
     demand_series = extract_uncensored_demand(group)
@@ -281,8 +417,12 @@ def score_sku_inventory(
     trend_pct, recent_mean, prior_mean = compute_demand_trend(demand_series, lead_time, daily_demand)
 
     # Safety stock & ROP
-    cat_kurtosis = cat_kurt.get(cat_key, 1.0)
-    inherited_cv = cat_cv.get(cat_key, 0.30)
+    raw_kurt = cat_kurt.get(cat_key, 1.0) if cat_kurt else 1.0
+    cat_kurtosis = 1.0 if (raw_kurt is None or pd.isna(raw_kurt)) else float(raw_kurt)
+
+    raw_cv = cat_cv.get(cat_key, 0.30) if cat_cv else 0.30
+    inherited_cv = 0.30 if (raw_cv is None or pd.isna(raw_cv) or raw_cv <= 0) else float(raw_cv)
+
     safety_stock, eff_z, _ = calculate_stochastic_safety_stock(
         daily_demand=daily_demand,
         lead_time=lead_time,
@@ -295,7 +435,7 @@ def score_sku_inventory(
     )
 
     reorder_point = forward_lead_demand + safety_stock
-    days_coverage = min(stock / daily_demand, 999.0) if daily_demand > 0 else 999.0
+    days_coverage = max(0.0, min(stock / daily_demand, 999.0)) if daily_demand > 0 else 999.0
     coverage_limit = NEW_SKU_COVERAGE_LIMIT if is_new else ESTABLISHED_COVERAGE_LIMIT
 
     # Pipeline awareness
@@ -354,14 +494,45 @@ def score_sku_inventory(
         order_up_to=order_up_to,
     )
 
+    # Empirical root cause synthesis ("What Happened")
+    what_happened = synthesize_what_happened(
+        sku_id=sku_id,
+        category=cat_clean,
+        abc_class=abc_class,
+        bucket=bucket,
+        severity=severity,
+        stock=stock,
+        daily_demand=daily_demand,
+        days_coverage=days_coverage,
+        lead_time=lead_time,
+        lead_time_std=lead_time_std,
+        reorder_point=reorder_point,
+        safety_stock=safety_stock,
+        trend_pct=trend_pct,
+        cv=cv,
+        roq=recommended_order_qty if urgency >= 2 else 0.0,
+        order_by_date=timing["order_by_date"],
+        stockout_date=timing["stockout_date"],
+        days_until_deadline=timing["days_until_deadline"],
+        timing_urgency_badge=timing["timing_urgency_badge"],
+        timing_urgency_msg=timing["timing_urgency_msg"],
+        excess_units=overstock_diag["excess_units"],
+        days_over_target=overstock_diag["days_over_target"],
+        coverage_limit=coverage_limit,
+    )
+
     method = (
         f"launch baseline ({observations} obs, ABC-{abc_class}, cat CV {inherited_cv:.2f}, LT std {lead_time_std:.1f}d)"
         if is_new else
         f"full-history baseline ({observations} obs, ABC-{abc_class}, z={eff_z:.2f})"
     )
 
-    missing_raw = int(group["units_sold_raw"].isna().sum())
-    imputed = int((group["units_sold_raw"].isna() & group["units_sold"].notna()).sum())
+    if "units_sold_raw" in group.columns:
+        missing_raw = int(group["units_sold_raw"].isna().sum())
+        imputed = int((group["units_sold_raw"].isna() & group["units_sold"].notna()).sum())
+    else:
+        missing_raw = int(group["units_sold"].isna().sum()) if "units_sold" in group.columns else 0
+        imputed = 0
 
     return {
         "sku_id": sku_id,
@@ -411,4 +582,6 @@ def score_sku_inventory(
         "excess_units": overstock_diag["excess_units"],
         "days_over_target": overstock_diag["days_over_target"],
         "overstock_action_playbook": overstock_diag["overstock_action_playbook"],
+        # Diagnostic narrative
+        "what_happened": what_happened,
     }

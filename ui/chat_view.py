@@ -3,6 +3,10 @@ ui/chat_view.py — Conversational Supply Chain Q&A Interface
 ===========================================================
 Interactive multi-turn diagnostic chat interface enabling operations leaders
 to ask questions about flagged SKUs, categories, Class A items, and procurement quantities.
+
+Provides both:
+- A full-page dedicated chat view (render_chat_view)
+- A reusable inline expander (render_inline_analyst) for embedding in any view
 """
 
 from __future__ import annotations
@@ -12,6 +16,55 @@ import streamlit as st
 
 from ai.grounding import answer_agentic_question
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REUSABLE INLINE ANALYST (embeddable in any view via st.expander)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_inline_analyst(
+    scores: pd.DataFrame,
+    context_key: str,
+    default_query: str = "",
+    placeholder: str = "Ask about inventory, replenishment deadlines, or specific SKUs…",
+) -> None:
+    """
+    Render a compact Ask the Analyst chat inside an expander.
+
+    Each call site passes a unique `context_key` (e.g. "attention_queue",
+    "sku_detail_SKU-1010") so its chat history lives in its own session
+    state slot and doesn't collide with other instances.
+    """
+    state_key = f"inline_chat_{context_key}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = []
+
+    with st.expander("💬 Ask the Analyst", expanded=False):
+        st.caption("Answers are retrieved from current scored data, not generated from general knowledge.")
+
+        # Display existing messages
+        for msg in st.session_state[state_key]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        query = st.chat_input(placeholder, key=f"inline_input_{context_key}")
+
+        if query:
+            st.session_state[state_key].append({"role": "user", "content": query})
+            with st.chat_message("user"):
+                st.markdown(query)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Retrieving evidence…"):
+                    response = answer_agentic_question(query, scores, st.session_state[state_key])
+                    st.markdown(response.text)
+                    if response.warning:
+                        st.caption(response.warning)
+                    st.session_state[state_key].append({"role": "assistant", "content": response.text})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FULL-PAGE DEDICATED CHAT VIEW
+# ─────────────────────────────────────────────────────────────────────────────
 
 def render_chat_view(scores: pd.DataFrame) -> None:
     """Render the conversational diagnostic Q&A interface."""

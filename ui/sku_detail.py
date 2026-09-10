@@ -24,15 +24,44 @@ from ui.charts import (
     build_risk_gauge,
     build_stock_trajectory_chart,
 )
+from ui.chat_view import render_inline_analyst
 
 
 def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     """Render the comprehensive SKU deep-dive tab."""
-    selected_sku = st.selectbox(
-        "Select a SKU for Deep-Dive Analysis",
-        scores["sku_id"].tolist(),
-        index=0,
-    )
+
+    # ── SKU SELECTOR WITH FILTERS ──
+    filt_col1, filt_col2, filt_col3 = st.columns([1.2, 1.2, 2])
+    with filt_col1:
+        flagged_count = int((scores["urgency"] > 0).sum())
+        show_flagged_only = st.checkbox(f"Show flagged SKUs only ({flagged_count})", value=False)
+    with filt_col2:
+        all_categories = sorted(scores["category"].unique().tolist())
+        sku_category_filter = st.selectbox(
+            "Filter by Category",
+            ["All Categories"] + all_categories,
+            key="sku_detail_cat_filter",
+        )
+
+    # Build the filtered SKU list for the dropdown
+    available = scores.copy()
+    if show_flagged_only:
+        available = available[available["urgency"] > 0]
+    if sku_category_filter != "All Categories":
+        available = available[available["category"] == sku_category_filter]
+
+    sku_options = available["sku_id"].tolist()
+    if not sku_options:
+        st.warning("No SKUs match the current filters. Adjust the filters above.")
+        return
+
+    with filt_col3:
+        selected_sku = st.selectbox(
+            f"Select SKU for Deep-Dive Analysis ({len(sku_options)} available)",
+            sku_options,
+            index=0,
+        )
+
     row = scores[scores["sku_id"] == selected_sku].iloc[0]
     sku_history = raw[raw["sku_id"] == selected_sku].sort_values("date")
 
@@ -84,6 +113,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
                 RECOMMENDED PROCUREMENT ACTION: {row['timing_urgency_badge']}
             </div>
             <p>
+                • <b>Diagnosis:</b> {row['what_happened']}<br>
                 • <b>Action:</b> Release Purchase Order for <b>{row['roq']:,.0f} units</b> by <b>{row['order_by_date']}</b>.<br>
                 • <b>Lead Time:</b> Supplier delivery takes {row['lead_time']:.0f} days (variance: ±{row['lead_time_std']:.1f}d).<br>
                 • <b>Stockout Horizon:</b> Projected to deplete completely by <b>{row['stockout_date']}</b> ({row['days_coverage']:.1f} days remaining).<br>
@@ -275,3 +305,14 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         ],
     })
     st.dataframe(evidence_table, width="stretch", hide_index=True)
+
+    st.divider()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 8. INLINE ASK THE ANALYST
+    # ─────────────────────────────────────────────────────────────────────────
+    render_inline_analyst(
+        scores=scores,
+        context_key=f"sku_detail_{selected_sku}",
+        placeholder=f"Ask about {selected_sku}, its risk, or procurement needs…",
+    )

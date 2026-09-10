@@ -108,7 +108,15 @@ COLORS = {
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. AI & GROQ CLIENT CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
-DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+GROQ_FALLBACK_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+    "qwen/qwen3.6-27b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+]
 GROQ_TEMPERATURE = 0.1  # Low temperature for deterministic, factual outputs
 GROQ_MAX_TOKENS = 650
 

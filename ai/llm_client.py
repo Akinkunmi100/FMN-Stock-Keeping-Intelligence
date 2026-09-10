@@ -22,10 +22,10 @@ from dataclasses import dataclass
 
 from config import (
     DEFAULT_GROQ_MODEL,
+    GROQ_FALLBACK_MODELS,
     GROQ_MAX_TOKENS,
     GROQ_TEMPERATURE,
 )
-
 
 from pathlib import Path
 
@@ -40,7 +40,7 @@ class LLMResult:
 
 def get_groq_api_key() -> str:
     """
-    Retrieve Groq API key from:
+    Retrieve Groq API key from (in priority order):
     1. OS environment variable (GROQ_API_KEY)
     2. Streamlit secrets (st.secrets['GROQ_API_KEY'])
     3. Project root .env file
@@ -74,14 +74,6 @@ def get_groq_api_key() -> str:
             pass
 
     return ""
-
-
-from config import (
-    DEFAULT_GROQ_MODEL,
-    GROQ_FALLBACK_MODELS,
-    GROQ_MAX_TOKENS,
-    GROQ_TEMPERATURE,
-)
 
 
 def execute_groq_chat(messages: list[dict[str, str]]) -> LLMResult:

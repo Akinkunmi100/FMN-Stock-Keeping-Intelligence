@@ -202,18 +202,19 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
             st.session_state.explanation = explain_sku(row)
             st.session_state.explanation_sku = selected_sku
 
-    llm_res: LLMResult = st.session_state.explanation
-    if llm_res.warning:
-        st.info(llm_res.warning)
+    if "explanation" in st.session_state:
+        llm_res: LLMResult = st.session_state.explanation
+        if llm_res.warning:
+            st.info(llm_res.warning)
 
-    source_label = "Live Groq Llama-3.3-70B Model Explanation" if llm_res.live else "Local Grounded Deterministic Explanation"
-    st.markdown(
-        f"<div class='evidence'>"
-        f"<div class='evidence-title'>{source_label}</div>"
-        f"<p>{llm_res.text}</p>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+        source_label = "Live Groq Llama-3.3-70B Model Explanation" if llm_res.live else "Local Grounded Deterministic Explanation"
+        st.markdown(
+            f"<div class='evidence'>"
+            f"<div class='evidence-title'>{source_label}</div>"
+            f"<p>{llm_res.text}</p>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
     st.divider()
 

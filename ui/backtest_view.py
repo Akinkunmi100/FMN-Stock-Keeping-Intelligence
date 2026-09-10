@@ -73,7 +73,7 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
             f"<div class='metric'>"
             f"<div class='metric-label'>Total Checkpoints</div>"
             f"<div class='metric-value'>{bt['total_evaluations']:,}</div>"
-            f"<div class='metric-sub'>across 28 SKUs</div>"
+            f"<div class='metric-sub'>across evaluated SKUs</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -93,6 +93,7 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
 
     with c_tbl:
         st.markdown("### Empirical Performance Breakdown")
+        total_eval = bt['total_evaluations'] if bt['total_evaluations'] > 0 else 1
         summary_df = pd.DataFrame({
             "Classification Category": [
                 "True Positives (TP)",
@@ -103,10 +104,10 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
                 "False Alarm Rate",
             ],
             "Value": [
-                f"{bt['tp']:,} ({bt['tp']/bt['total_evaluations']:.1%})",
-                f"{bt['fp']:,} ({bt['fp']/bt['total_evaluations']:.1%})",
-                f"{bt['fn']:,} ({bt['fn']/bt['total_evaluations']:.1%})",
-                f"{bt['tn']:,} ({bt['tn']/bt['total_evaluations']:.1%})",
+                f"{bt['tp']:,} ({bt['tp']/total_eval:.1%})",
+                f"{bt['fp']:,} ({bt['fp']/total_eval:.1%})",
+                f"{bt['fn']:,} ({bt['fn']/total_eval:.1%})",
+                f"{bt['tn']:,} ({bt['tn']/total_eval:.1%})",
                 f"{bt['accuracy']:.1%}",
                 f"{bt['false_alarm_rate']:.1%}",
             ],

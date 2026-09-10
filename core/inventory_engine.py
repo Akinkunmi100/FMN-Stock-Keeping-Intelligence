@@ -295,7 +295,7 @@ def score_sku_inventory(
     )
 
     reorder_point = forward_lead_demand + safety_stock
-    days_coverage = stock / daily_demand if daily_demand > 0 else np.inf
+    days_coverage = min(stock / daily_demand, 999.0) if daily_demand > 0 else 999.0
     coverage_limit = NEW_SKU_COVERAGE_LIMIT if is_new else ESTABLISHED_COVERAGE_LIMIT
 
     # Pipeline awareness

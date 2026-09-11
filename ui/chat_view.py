@@ -1,13 +1,4 @@
-"""
-ui/chat_view.py — Conversational Supply Chain Q&A Interface
-===========================================================
-Interactive multi-turn diagnostic chat interface enabling operations leaders
-to ask questions about flagged SKUs, categories, Class A items, and procurement quantities.
-
-Provides both:
-- A full-page dedicated chat view (render_chat_view)
-- A reusable inline expander (render_inline_analyst) for embedding in any view
-"""
+"""The analyst question view, used both as a page and inside other views."""
 
 from __future__ import annotations
 
@@ -25,10 +16,10 @@ def render_inline_analyst(
     scores: pd.DataFrame,
     context_key: str,
     default_query: str = "",
-    placeholder: str = "Ask about inventory, replenishment deadlines, or specific SKUs…",
+    placeholder: str = "Ask about stock, deadlines, or a specific SKU...",
 ) -> None:
     """
-    Render a compact Ask the Analyst chat inside an expander.
+    Render a compact question box inside an expander.
 
     Each call site passes a unique `context_key` (e.g. "attention_queue",
     "sku_detail_SKU-1010") so its chat history lives in its own session
@@ -38,8 +29,8 @@ def render_inline_analyst(
     if state_key not in st.session_state:
         st.session_state[state_key] = []
 
-    with st.expander("💬 Ask the Analyst", expanded=False):
-        st.caption("Answers are retrieved from current scored data, not generated from general knowledge.")
+    with st.expander("Ask about this data", expanded=False):
+        st.caption("The answer is based on the current scored data, not a general stock recommendation.")
 
         # Display existing messages
         for msg in st.session_state[state_key]:
@@ -54,7 +45,7 @@ def render_inline_analyst(
                 st.markdown(query)
 
             with st.chat_message("assistant"):
-                with st.spinner("Retrieving evidence…"):
+                with st.spinner("Checking the matching inventory data..."):
                     response = answer_agentic_question(query, scores, st.session_state[state_key])
                     st.markdown(response.text)
                     if response.warning:
@@ -67,17 +58,16 @@ def render_inline_analyst(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_chat_view(scores: pd.DataFrame) -> None:
-    """Render the conversational diagnostic Q&A interface."""
-    st.markdown("### Ask the Supply Chain Analyst")
-    st.caption("Ask about SKUs, categories, Class A drivers, or the attention queue. Answers are retrieved from the current dataset, not generated from general knowledge.")
+    """Render the full-page question-and-answer view."""
+    st.markdown("### Ask about the inventory data")
+    st.caption("Ask about a SKU, a category, or the attention queue. The app looks up the relevant rows before it answers.")
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = [
             {
                 "role": "assistant",
                 "content": (
-                    "Ask about flagged SKUs, recommended purchase order quantities, "
-                    "order-by deadlines, Class A items at risk, or a specific category such as Beverages or Snacks."
+                    "Try asking which SKUs need attention, why a SKU is flagged, or how much stock the app suggests ordering."
                 ),
             }
         ]
@@ -97,16 +87,16 @@ def render_chat_view(scores: pd.DataFrame) -> None:
     st.markdown("<div class='eyebrow'>Quick Questions</div>", unsafe_allow_html=True)
     c_chip1, c_chip2, c_chip3, c_chip4 = st.columns(4)
     with c_chip1:
-        if st.button("Which SKUs need attention this week?", use_container_width=True):
+        if st.button("Which SKUs need attention?", width="stretch"):
             st.session_state.user_query = "Which SKUs need attention this week?"
     with c_chip2:
-        if st.button(f"Why is {example_flagged} flagged?", use_container_width=True):
+        if st.button(f"Why is {example_flagged} flagged?", width="stretch"):
             st.session_state.user_query = f"Why is {example_flagged} flagged?"
     with c_chip3:
-        if st.button("Show high-priority Class A items", use_container_width=True):
-            st.session_state.user_query = "Show high-priority Class A items"
+        if st.button("Show highest-volume items at risk", width="stretch"):
+            st.session_state.user_query = "Show top priority items at risk"
     with c_chip4:
-        if st.button(f"How much to order for {example_order_qty}?", use_container_width=True):
+        if st.button(f"Suggested order for {example_order_qty}", width="stretch"):
             st.session_state.user_query = f"How much to order for {example_order_qty}?"
 
     st.divider()
@@ -121,7 +111,7 @@ def render_chat_view(scores: pd.DataFrame) -> None:
     # ─────────────────────────────────────────────────────────────────────────
     # 3. CHAT INPUT HANDLING
     # ─────────────────────────────────────────────────────────────────────────
-    query = st.chat_input("Ask a question about inventory, replenishment deadlines, or specific SKUs…")
+    query = st.chat_input("Ask about stock, deadlines, or a specific SKU...")
     if "user_query" in st.session_state and st.session_state.user_query:
         query = st.session_state.user_query
         st.session_state.user_query = None
@@ -132,7 +122,7 @@ def render_chat_view(scores: pd.DataFrame) -> None:
             st.markdown(query)
 
         with st.chat_message("assistant"):
-            with st.spinner("Retrieving verified evidence and synthesizing answer…"):
+            with st.spinner("Checking the matching inventory data..."):
                 response = answer_agentic_question(query, scores, st.session_state.chat_messages)
                 st.markdown(response.text)
                 if response.warning:

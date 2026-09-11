@@ -1,11 +1,4 @@
-"""
-config.py — Central Configuration & Operational Constants
-=========================================================
-Defines all business rules, mathematical constants, service-level targets,
-color palettes, and system configurations for the Supply Chain Early Warning System.
-
-This central configuration ensures all modules reference a single source of truth.
-"""
+"""Shared paths, thresholds, model settings, and visual constants."""
 
 from __future__ import annotations
 
@@ -16,14 +9,19 @@ from pathlib import Path
 # 1. DIRECTORY & FILE PATHS
 # ─────────────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_PATH = PROJECT_ROOT / "project1_supply_chain_demand.csv"
+_DATA_PATH_OVERRIDE = os.getenv("SUPPLY_CHAIN_DATA_PATH", "").strip()
+DATA_PATH = (
+    Path(_DATA_PATH_OVERRIDE).expanduser()
+    if _DATA_PATH_OVERRIDE
+    else PROJECT_ROOT / "project1_supply_chain_demand.csv"
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. ABC PARETO CLASSIFICATION THRESHOLDS
 # ─────────────────────────────────────────────────────────────────────────────
 # Cumulative volume thresholds for Pareto triage
 ABC_THRESHOLDS = {
-    "A": 0.70,  # Top 70% of cumulative unit sales volume (Mission-Critical)
+    "A": 0.70,  # Top 70% of cumulative unit volume
     "B": 0.90,  # Next 20% of sales volume (Moderate Priority)
     "C": 1.00,  # Bottom 10% of sales volume (Low Priority / Tail)
 }

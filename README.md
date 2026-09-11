@@ -1,223 +1,231 @@
-# Signal — Supply Chain Early-Warning Tool
+# Signal: supply chain early-warning tool
 
-**Signal** flags which SKUs need procurement attention before a stockout or overstock situation actually hits — built for the Supply Chain team at Flour Mills of Nigeria (FMN) to open themselves, with no ML background required.
+Signal is a Streamlit dashboard for reviewing inventory risk across a portfolio of SKUs. It reads the daily demand, receipt, stock, category, and lead-time data in `project1_supply_chain_demand.csv` and turns it into a short, ranked list of products that may need action.
 
----
+It is designed to support a daily supply-chain review. It is not an ERP, a purchase-order system, or a replacement for an analyst's judgement.
 
-## 1. Problem Understanding
+## Problem understanding
 
-The Supply Chain team currently reacts to stockouts and overstock situations *after* the delay or wasted capital has already happened, because nothing surfaces the risk in advance. This tool ingests daily demand, receipts, stock, category, and lead-time data for 28 SKUs (25 established, 3 newly launched) and answers three questions an operator actually needs, every day, without doing the math themselves:
+The sponsor's problem is not a lack of data. The team already has daily records, but the records do not answer the operational question quickly enough:
 
-1. **Which SKUs need attention right now, and how urgently?**
-2. **Why** — in plain language, grounded in that SKU's real numbers, not a generic template?
-3. **What exactly should I do, and by when?**
+> Which SKUs should someone look at today, what is driving the warning, and how much time is left to respond?
 
-**What "flagged" means in this system**: a SKU is flagged into one of four action buckets — `Order soon` (active stockout risk, an order is due now or overdue), `Plan replenishment` (stockout risk building but still outside the immediate window), `Overstock risk` (excess capital tied up beyond a coverage-days threshold), or `Monitor closely` (a demand-acceleration signal with no stock trigger yet). A SKU with none of these active triggers is `On track`. Every bucket assignment traces back to an explicit, readable boolean condition in the scoring engine (`core/inventory_engine.py`) — never a black-box threshold a user has to trust blindly.
+The app does the first pass over the data. It shows the attention queue first, then lets a user open a SKU for the numbers behind its status. The assistant can answer questions such as `Why is SKU-1004 flagged?` or `Which SKUs need attention this week?`.
 
----
+A SKU is flagged when one of these conditions is true:
 
-## 2. Approach
+- **Order soon**: stock is inside the replenishment window and the projected order deadline is immediate or overdue.
+- **Plan replenishment**: the SKU is below its reorder point, but its current coverage is still longer than the supplier lead time.
+- **Overstock risk**: stock covers more days than the configured target and is materially above the reorder point.
+- **Monitor closely**: recent demand is accelerating while coverage is already relatively close to the lead time.
+- **On track**: none of the warning conditions is currently true.
 
-### 2.1 Data preparation
+The status comes from readable rules in `core/inventory_engine.py`. Groq explains the result; it does not choose the status.
 
-The raw CSV has real-world mess, and each piece is handled with an explicit, stated rule (full detail and rationale: [docs/DECISIONS.md](docs/DECISIONS.md)):
+## Approach
 
-| Issue | Rule |
-|---|---|
-| Missing `units_sold` (90 rows) | Bounded linear interpolation for gaps ≤2 consecutive days; longer gaps left excluded, never guessed at. |
-| Missing `closing_stock` (45 rows) | Forward-filled from the last known on-hand count within that SKU's series — a missing reading isn't a reset to zero. |
-| Inconsistent category casing (`Snacks` / `SNACKS` / ...) | Casefold + whitespace-collapse; verified to cleanly resolve the raw CSV's 10 variants into 5 categories. |
-| Lead-time outliers | Values outside `[1, 60]` days are distrusted and replaced with the SKU's own median (falling back to the dataset-wide median). |
+### Data preparation
 
-An earlier version of this pipeline had a real bug here: deduplicating `(sku_id, date)` pairs aggregated `units_sold` with a plain `sum()`, and pandas' `sum()` returns `0.0` (not `NaN`) for an all-missing group — silently turning every genuinely-missing sales day into a verified zero-sales day *before* the interpolation logic above ever ran. Fixed by aggregating with `sum(min_count=1)`, which preserves the gap. `test_app_verification.py` asserts this doesn't regress.
+The pipeline in `core/data_pipeline.py` prepares the CSV before scoring:
 
-### 2.2 Model & validation
+1. Rows with the same `sku_id` and `date` are combined. Sales and receipts are added, while the last closing-stock reading is kept.
+2. A missing `units_sold` value is linearly interpolated only when it is part of a bounded gap of two days or fewer. Longer gaps remain missing and are left out of demand statistics.
+3. A missing `closing_stock` reading is carried forward from the last known reading for that SKU. The original value is kept in `closing_stock_raw` for auditability.
+4. Categories are trimmed, case-folded, and whitespace-normalized. The current dataset has casing/spacing differences but no unresolved spelling conflict.
+5. Lead times outside 1-60 days are treated as invalid. The SKU median is used when possible; otherwise the dataset median is used.
+6. SKUs are given an ABC class from total unit volume. This is a volume-based priority, not a revenue or production-criticality ranking, because the dataset contains no prices, margins, or production-dependency fields.
+7. Portfolio day-of-week multipliers are calculated and used when projecting demand across a supplier lead-time window.
 
-This is a **hybrid reorder-point / stochastic safety-stock system**, not a trained forecasting model — deliberately, because ~6 months of history per established SKU is enough to estimate a stable velocity and variance, but not enough to responsibly train and validate a per-SKU ML model, and the 3 new SKUs (~2 weeks of history) would have essentially nothing to train on anyway.
+For the supplied file, the pipeline reads 4,551 raw rows, reduces them to 4,536 SKU/date records, finds 90 missing demand values, interpolates 89, and leaves 1 outside the interpolation rule. There are 45 missing closing-stock readings; these are carried forward before scoring.
 
-- **Daily demand velocity**: 60% full-history median + 40% EWMA, blending robustness against one-off spikes with responsiveness to a real shift.
-- **Seasonality**: day-of-week multipliers applied across the forward lead-time window (not just a flat daily rate).
-- **Safety stock**: `SS = z_eff × √(L·σ_D² + D²·σ_L²)` — combines *both* demand variance and lead-time variance, not demand alone, with the service-level z-score (2.05 / 1.65 / 1.28) tiered by ABC class so Class A (top 70% of volume) gets a 98% cycle service level.
-- **Validated with a rolling-origin walk-forward backtest** (`core/backtest.py`), not a random train/test split — at each historical date *t*, demand/volatility statistics are computed strictly from data available at *t-1*, which matters because daily readings within a SKU are autocorrelated and a random split would leak future information into the "test" set and inflate the reported metric.
+### Inventory risk model
 
-**Current backtest results** (3,926 checkpoints, run against the fixed pipeline):
+This is a transparent hybrid of reorder-point logic and stochastic safety stock. It is not a trained machine-learning model.
 
-| Metric | Value | What it means operationally |
-|---|---|---|
-| Recall | 73.8% | ~3 in 4 real stockouts are caught with advance warning |
-| Precision | 18.3% | ~4 in 5 alerts turn out not to become an actual stockout |
-| F1 | 29.3% | |
-| Accuracy | 59.6% | Not the metric that matters here — see below |
+For each SKU, the scoring engine:
 
-Precision this low is a **deliberate tradeoff, not an accident**: a missed stockout halts a production line; a false alarm costs an operator a few minutes reviewing a SKU that turns out to be fine, or an order placed a little early. Given that asymmetry, the system is tuned toward recall. Accuracy is reported for completeness but is a misleading headline number here — true negatives (ordinary healthy-stock days) vastly outnumber actual stockouts, so a model that flagged nothing would still score high on accuracy while being useless.
+1. Removes demand observations from zero-stock days when at least 14 positive-stock days are available. This reduces the chance of treating an unavailable product as a low-demand product (if the shelf was empty, that's not evidence nobody wanted to buy it).
+2. Estimates daily demand as a blend of the full-history median and a recent EWMA (an average that weights the last few days more heavily than older ones): 60% median and 40% EWMA.
+3. Projects demand across the lead-time window using day-of-week multipliers, so a SKU that sells more on Wednesdays gets a forecast that reflects that instead of a flat daily average.
+4. Calculates safety stock (the buffer held above expected demand) from demand variability, lead-time variability, ABC service-level settings, and a category-level tail-risk adjustment.
+5. Calculates `reorder point = projected lead-time demand + safety stock`: the stock level that should trigger a new order.
+6. Calculates an order-up-to level and recommended order quantity for SKUs that need replenishment.
+7. Calculates `days of coverage = closing stock / estimated daily demand`.
+8. Assigns the action bucket, a 0-100 risk score, and a severity level.
+9. Writes a one-paragraph, plain-language explanation of what's driving that status (see "Two kinds of explanation" below).
 
-### 2.3 Risk thresholds
+The main triggers are:
 
-- **Stockout trigger**: `stock ≤ reorder_point OR days_coverage ≤ lead_time × (1 + 0.5·CV)` — the lead-time comparison widens for a more volatile SKU, since volatility is exactly what erodes a fixed buffer fastest.
-- **Overstock trigger**: `days_coverage ≥ coverage_limit AND stock > 1.5 × reorder_point` (established SKUs: 28-day limit = 2× the longest observed supplier lead time in this dataset, 14 days; new SKUs: 21-day limit, tighter because their demand-velocity estimate rests on far less data).
-- Every constant behind these formulas is commented in `config.py` with the reasoning tied to either the observed lead-time range or the demand-volatility distribution in this dataset — not a bare number.
+- Stockout risk when `stock <= reorder point` or `days of coverage <= lead time * (1 + 0.5 * CV)`. A recent receipt can suppress the warning when it indicates that replenishment is active and stock is above the safety buffer.
+- Overstock risk when coverage is at least 28 days for established SKUs (21 days for new SKUs) and stock is more than 1.5 times the reorder point.
+- Demand acceleration when the recent lead-time-sized demand window is at least 15% above the preceding comparison window and coverage is within 2.5 lead times.
 
-### 2.4 New vs. established SKUs
+The risk score is a separate severity signal. It combines coverage depletion, demand acceleration, volatility, and proximity to the reorder point, then applies an ABC multiplier. The bucket remains rule-based so a user can see why an SKU entered the queue.
 
-The established approach fails outright on ~2 weeks of data: a per-SKU standard deviation from 12-14 observations is dominated by whichever one unusual day happened to fall in that window. New SKUs instead **inherit their category's median coefficient of variation** (computed only from established SKUs with ≥56 days of history), get a wider safety-stock floor, and use the tighter 21-day overstock limit. Verified live: SKU-2000/2001/2002 all score through a distinct `launch baseline` method path and correctly flag `Order soon` — genuinely, since all three sit at 0 closing stock in the raw data with no receipts recorded yet.
+### Two kinds of explanation
 
-### 2.5 LLM explanations and Q&A — how they're actually grounded
+The dashboard uses two different mechanisms to explain a SKU, and it's worth being precise about which is which:
 
-Every flag explanation and every Q&A answer is a **live call to a Groq-hosted model at runtime** (the specific model is configurable in `config.py` — `GROQ_MODEL`/`DEFAULT_GROQ_MODEL`, with an ordered fallback list tried if the primary is unavailable, and the UI displays whichever model id actually answered rather than assuming one), built from that SKU's real computed numbers (`ai/grounding.py`) — not a template with digits substituted in. Two things make this checkable rather than just asserted:
+1. **"What happened" (always on, no API call).** Every scored SKU gets a one-paragraph diagnosis, the exact numbers that put it in its bucket, written by a plain Python function (`synthesize_what_happened()` in `core/inventory_engine.py`) that fills a template with that SKU's real figures. It's visible immediately in the attention queue and the SKU detail page, costs nothing, and needs no internet connection. It is not AI-generated, and the app doesn't claim it is.
+2. **"Operational diagnosis" (on demand, needs Groq).** A longer, more conversational explanation generated at runtime by a live call to a Groq-hosted language model, described below.
 
-1. **The prompt is built from retrieved data, not general knowledge.** `answer_agentic_question()` routes a free-text question (SKU-specific, category, Class-A, or general portfolio) through a filter against the scored SKU table *first*, and only the filtered subset is serialized into the LLM prompt.
-2. **A live response is checked against its own evidence before the user sees it**, via `validate_grounded_numbers()`: every number the model cites must trace back (within 1%/0.5 units) to a number actually present in the evidence or the system prompt. A response that cites an unverifiable figure is discarded and replaced with a deterministic local explanation, with a warning explaining why. (This check existed in the codebase before this fix but was never wired into the actual call path — dead code satisfying the letter of "we have a check" with none of the substance. It's now called on every explanation and every Q&A route, and three real bugs in the check itself — Unicode dash handling, SKU-ID digit false-positives, and a thousands-separator parsing gap — were found and fixed in the process of actually exercising it against live Groq output.)
+### New SKUs
 
-Spot-checked (both via direct calls and inside the running Streamlit app): SKU-1010's explanation cites stock 112, coverage 0.6 days, ROQ 1,839, order-by 2026-06-26 — all matching its row exactly. SKU-1009's cites stock 9,874, coverage 29.2 days, excess 1,825 units — all matching. Both were live Groq calls, and the two explanations differ in their actual reasoning (one about an overdue PO, the other about holding off purchases on a demand decline), not just in the substituted digits.
+SKUs with fewer than 56 days of history use a launch baseline rather than the established-SKU path. Their own volatility estimate is too uncertain to use on its own, so the model borrows the median coefficient of variation from established SKUs in the same category and applies a wider safety-stock floor.
 
----
+The three new SKUs in the supplied file have 12 days of history each. They are scored, but the detail view identifies the launch method so their results are not presented with the same confidence as a six-month SKU.
 
-## 3. How to Run
+### Validation
 
-### Install
+The project includes a rolling-origin backtest in `core/backtest.py`. It uses only data available before each historical checkpoint and checks whether a stockout occurred within the SKU's lead-time horizon.
 
-```bash
-pip install -r requirements.txt
-```
+On the current dataset it evaluates 3,926 checkpoints:
 
-### Set the LLM API key (optional — the app is fully functional without one)
+| Measure | Result | Meaning |
+| --- | ---: | --- |
+| Recall | 73.8% | Share of stockout events that received an earlier warning |
+| Precision | 18.3% | Share of warnings followed by a stockout in the tested horizon |
+| F1 | 29.3% | Combined precision/recall measure |
+| False-alarm rate | 42.2% | Share of healthy checkpoints that were still flagged |
+| Accuracy | 59.6% | Overall classification accuracy; less useful than recall/precision here |
 
-Groq's free tier needs no credit card (1,000 requests/day). Get a key at [console.groq.com](https://console.groq.com), then set it via **any** of:
+These figures describe the stockout-warning benchmark in this dataset. They do not validate overstock alerts, the composite score, the Groq explanation, or whether an analyst would take the recommended action. Precision is low, so this should be treated as a review queue rather than an automatic ordering instruction.
 
-```bash
-# Option A: environment variable
-export GROQ_API_KEY="your-key-here"
+### Explanations and Q&A
 
-# Option B: .env file in the project root
-echo 'GROQ_API_KEY=your-key-here' > .env
+When `GROQ_API_KEY` is available, the app sends a runtime request to Groq. The model is configured through `GROQ_MODEL`; the current default and fallback list are in `config.py`.
 
-# Option C: .streamlit/secrets.toml
-echo 'GROQ_API_KEY = "your-key-here"' > .streamlit/secrets.toml
-```
+Before making a request, the app retrieves relevant evidence:
 
-Without a key, explanations and Q&A fall back to a deterministic, evidence-based local engine — clearly labeled as such in the UI, never disguised as a live model response.
+- A SKU question retrieves one scored SKU.
+- A category question retrieves the SKUs in that category.
+- A Class A question retrieves ABC-A SKUs.
+- A general portfolio question retrieves the summary and the highest-priority flagged SKUs.
 
-### Run locally
+The evidence includes stock, demand estimates, coverage, lead time, reorder point, safety stock, recommended order quantity, order timing, trend, volatility, ABC class, score, severity, and the method used for the SKU. A numeric grounding check rejects a live answer if it cites a number that is not present in the retrieved evidence. The user then sees a local evidence-based explanation instead.
 
-```bash
+Without a Groq key, the dashboard still works. Explanations and Q&A use the local deterministic fallback and are labelled as local rather than being presented as AI output.
+
+## How to run
+
+### Requirements
+
+- Python 3.11 or newer
+- The supplied CSV, unless another file is provided through `SUPPLY_CHAIN_DATA_PATH`
+- Internet access and a Groq API key only if live explanations or Q&A are required
+
+### Install and start the app
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-### Run the verification suite
+macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+streamlit run app.py
+```
+
+`requirements.txt` uses compatible version ranges rather than exact pins. For a production deployment, generate and commit a lock file after choosing the deployment Python version.
+
+### Enable Groq
+
+The app checks, in order:
+
+1. `GROQ_API_KEY` in the environment
+2. `GROQ_API_KEY` in `.streamlit/secrets.toml`
+3. `GROQ_API_KEY` in a local `.env` file
+
+PowerShell:
+
+```powershell
+$env:GROQ_API_KEY = "your-key"
+$env:GROQ_MODEL = "openai/gpt-oss-120b"
+streamlit run app.py
+```
+
+The key files are ignored by Git. Do not commit them.
+
+### Run checks
 
 ```bash
 python test_app_verification.py
 ```
 
-Checks (offline, no API key required): every SKU scores without error, the `units_sold`/`closing_stock` gap rules behave as documented, category normalization collapses correctly, at least one established and one new SKU produce an active flag, the backtest runs end-to-end, and the grounding validator correctly accepts grounded text / rejects a fabricated number.
+The offline verification script checks data preparation, missing-value handling, category normalization, all 28 SKUs, new-SKU scoring, the backtest, and the numeric grounding validator. It does not call Groq.
 
-### Deployed URL
+### Run the monitor
 
-**Not yet deployed to a public URL.** The app runs correctly locally (`streamlit run app.py`) and is deployment-ready — `Dockerfile` is production-configured, `requirements.txt` is pinned, and secrets are read from environment variables / `.streamlit/secrets.toml`, never committed. Deploying requires connecting a hosting platform to this repo's GitHub account (Streamlit Community Cloud or Render — see §6 below for exact steps), which is an account-level action outside what an automated pass over the code can complete. Once deployed, replace this line with the live link.
-
----
-
-## 4. Limitations & Next Steps
-
-- **No public deployment yet** (see above) — this is the single biggest gap between "runs correctly" and "deliverable" per the brief's own checklist.
-- **Precision is genuinely low (18.3%)** — by design, given the stated cost asymmetry, but a plant team acting on every alert will spend real time reviewing SKUs that don't stockout. Worth revisiting with real operator feedback on whether the recall/precision balance is right in practice, not just in theory.
-- **Severity-threshold calibration gap**: a SKU that is already overdue with a same-day projected stockout (verified case in this dataset: SKU-1010, 0.6 days coverage, order-by date already passed) still scores ~74/100 and displays as "High," not "Critical" (cutoff is 75). Documented in `config.py` rather than silently adjusted, since changing it reclassifies which SKUs show as Critical throughout the dashboard, CSV export, and alert digest — a modeling decision that deserves sign-off, not a unilateral tweak.
-- **No fuzzy-matching for category-name spelling variants** (e.g. `Snack` vs `Snacks`) — the current dataset only has casing/whitespace variants, so there was nothing to validate this against. If a future data refresh introduces real spelling drift, this needs revisiting.
-- **New-SKU accuracy is inherently the weakest part of the system** — the category-CV-inheritance fallback is a reasonable engineering compromise, not a substitute for real history. Treat new-SKU flags as directionally useful, not as precise as an established SKU's.
-- **Lead-time outlier handling is untested against real bad data** — the `[1,60]`-day sanitization logic works (verified by injecting synthetic bad values), but every lead time in the actual dataset happens to already be valid, so this path has never been exercised in production.
-- **Missing external signals**: open purchase orders / in-transit stock, promotional calendar, supplier OTIF reliability, holiday/seasonal demand shifts, cross-SKU substitution, supplier MOQ constraints, and shelf-life/expiry are all real drivers of stockout/overstock risk that this dataset doesn't capture. See §7 below for what each would take to add.
-
----
-
-## 5. Repository Structure
-
-```
-FMN Internship Project/
-├── app.py                              # Streamlit entry point wiring UI views together
-├── config.py                           # Business constants, thresholds (each with a stated reason), z-scores, colors
-├── monitor.py                          # Standalone CLI alert dispatcher (email/Slack/Teams), for scheduling outside the app
-├── test_app_verification.py            # Offline verification suite — see §3
-├── Dockerfile                          # Production container config
-├── requirements.txt                    # Pinned dependencies
-├── project1_supply_chain_demand.csv    # Source dataset
-├── docs/
-│   ├── BUILD_BRIEF.md                  # Original problem brief and design questions
-│   └── DECISIONS.md                    # Resolved answers to those questions, with rationale
-│
-├── core/                                # Data + math, no UI/LLM dependencies
-│   ├── data_pipeline.py                # Ingestion, dedup, gap handling, ABC Pareto, seasonality priors
-│   ├── demand_model.py                 # Censored-demand correction, blended velocity, trend detection
-│   ├── inventory_engine.py             # Safety stock, ROP/ROQ, order timing, overstock diagnostics, risk score
-│   ├── backtest.py                     # Rolling-origin walk-forward validation
-│   └── alerts.py                       # Email/Slack/Teams digest builders and senders
-│
-├── ai/                                  # LLM grounding — no Streamlit dependency, independently testable
-│   ├── llm_client.py                   # Groq client with multi-source key loading and model fallback
-│   └── grounding.py                    # Evidence builder, anti-hallucination check, Q&A router
-│
-└── ui/                                  # Streamlit components and Plotly charts
-    ├── styles.py, charts.py, hero.py, attention_queue.py, sku_detail.py, backtest_view.py, chat_view.py
-```
-
----
-
-## 6. Deploying
-
-Two independent decisions: the app framework (already chosen — Streamlit) and the hosting platform (not yet chosen/executed).
-
-**Option A — Streamlit Community Cloud (free, simplest)**
-1. Push this repo to GitHub (already has a remote configured).
-2. Visit [share.streamlit.io](https://share.streamlit.io), connect the GitHub account, select this repo, click Deploy.
-3. In App Settings → Secrets, add `GROQ_API_KEY = "your-free-groq-key"`.
-4. Copy the generated public URL into §3 above.
-
-**Option B — Render.com (free tier)**
-1. Create a Web Service pointing at this repo.
-2. Build command: `pip install -r requirements.txt`
-3. Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
-4. Set `GROQ_API_KEY` as an environment variable in the Render dashboard.
-
-**Option C — Docker (internal server)**
-```bash
-docker build -t fmn-signal-control-room .
-docker run -p 8501:8501 -e GROQ_API_KEY=your-key fmn-signal-control-room
-```
-
----
-
-## 7. Autonomous Monitoring (`monitor.py`)
-
-No one needs to sit watching the dashboard. `monitor.py` is a standalone CLI script meant to be scheduled (Windows Task Scheduler / cron) to run the same scoring engine headlessly and dispatch a digest:
+`monitor.py` runs the same scoring pipeline without opening the dashboard:
 
 ```bash
-python monitor.py --dry-run   # simulate, log only, no network calls
-python monitor.py --email     # send the digest via SMTP
-python monitor.py --slack     # post to a Slack incoming webhook
-python monitor.py --teams     # post to a Microsoft Teams webhook
-python monitor.py --all       # dispatch across every configured channel
+python monitor.py --dry-run
 ```
 
-Configure via environment variables: `SMTP_SERVER`, `SMTP_USER`, `SMTP_PASSWORD`, `ALERT_RECIPIENTS`, `SLACK_WEBHOOK_URL`, `TEAMS_WEBHOOK_URL` (see `config.py`'s `ALERT_CONFIG`). Windows Task Scheduler example:
+Email, Slack, and Microsoft Teams delivery are available through environment variables. Sending notifications has not been exercised against live recipient accounts in this repository.
+
+### Use another data file
+
+The default input is the supplied CSV beside `app.py`. To point the app at another file with the same columns:
 
 ```powershell
-schtasks /create /tn "SignalDailyInventoryAlert" /tr "python C:\path\to\monitor.py --all" /sc daily /st 07:00
+$env:SUPPLY_CHAIN_DATA_PATH = "C:\data\inventory.csv"
+streamlit run app.py
 ```
 
----
+### Deployment
 
-## 8. What's Missing at a Glance vs. One Click Away
+There is currently no public deployment link. The code is ready to deploy, but connecting a repository to a hosting account and adding the Groq secret are account-level actions that have not been completed here.
 
-- **At a glance** (Attention Queue tab, zero clicks): total flagged vs. portfolio size, critical severity count, Class-A-at-risk count, total reorder units, plus 3 portfolio charts (risk donut, ABC volume bar, stockout countdown).
-- **One click away**: per-SKU deep dive (stock trajectory, demand/receipts chart, risk gauge, what-if simulator, live AI explanation, full evidence audit table), free-text Q&A, and the backtest/validation tab.
+For Streamlit Community Cloud:
 
-## 9. External Signals Not Yet Integrated
+1. Push the repository to GitHub.
+2. Create an app using `app.py` as the main file.
+3. Add `GROQ_API_KEY` under the app's secrets.
+4. Put the generated URL in the handoff materials.
 
-These would meaningfully improve accuracy but require data this dataset doesn't contain:
+For a container deployment:
 
-1. **Open POs / in-transit inventory** — currently can't distinguish an unaddressed risk from one where a shipment is already en route.
-2. **Promotional calendar** — trade promotions cause demand spikes historical sales alone can't predict.
-3. **Supplier OTIF reliability** — a single static lead time underestimates risk for a chronically late supplier.
-4. **Holiday/seasonal calendar** — Ramadan, Christmas, rainy season shift FMCG demand beyond what day-of-week seasonality captures.
-5. **Cross-SKU substitution** — SKUs are scored independently; a stockout on one pack size doesn't currently reallocate demand to another.
-6. **Supplier MOQ constraints** — the computed ROQ may not match real order-batch minimums.
-7. **Shelf-life/expiry** — overstock risk is understated for perishables nearing expiry.
+```bash
+docker build -t signal-supply-chain .
+docker run -p 8501:8501 -e GROQ_API_KEY=your-key signal-supply-chain
+```
+
+## Limitations and next steps
+
+These are the limitations that matter when interpreting the current results.
+
+1. **The backtest only validates the stockout-warning half of the system.** The 73.8%/18.3% recall/precision numbers above describe one trigger (`Order soon`) against one outcome (did a stockout actually happen). Overstock alerts, the composite risk score, and the written diagnosis have no equivalent empirical check yet: they're built from the same real numbers, but they haven't been scored against historical outcomes the way the stockout trigger has.
+2. **There is no cost data in this dataset, so the recall-over-precision tradeoff is a judgment call, not a calculated optimum.** A missed stockout clearly matters more than a false alarm, but by how much is unknown, because the file has no price, margin, or downtime-cost fields. The 15% trend threshold, 21/28-day coverage limits, and score weights in `config.py` are reasoned starting points, not figures fitted to this data, and they should move once real cost numbers exist.
+3. **ABC priority is volume only, and volume isn't the same as importance.** A SKU is Class A because it sells a lot of units, not because it's expensive, hard to substitute, or contractually committed to a customer. A low-volume but critical ingredient would currently rank below where the business might actually want it.
+4. **The three new SKUs have 12 days of history each: not enough for a SKU-specific forecast.** The model deliberately borrows category-level volatility as a stand-in, which is a reasonable fallback, not a substitute for real history. Treat their flags as directional until more data accumulates.
+5. **Supplier-side visibility is incomplete.** The data has daily receipts but no open purchase orders, confirmed inbound quantities, or supplier reliability track record. A shipment that's already en route looks identical to one that was never ordered, and a missing stock count is carried forward from the last known reading with no limit on how stale it can get before someone should double-check it by hand.
+6. **Seasonality stops at day-of-week.** There's no adjustment for promotions, holidays, or one-off demand shocks. A marketing push or a Ramadan effect would currently look identical to organic demand growth to this model.
+
+The single highest-value next step: start recording what actually happens after each alert, whether the SKU stocked out, whether an order was placed, what arrived, and whether the warning was useful. That closes the loop this dataset is currently missing, turns the threshold choices in point 2 from reasoned guesses into evidence, and is the only way to know whether flagging fewer, more-precise alerts would actually save more than it costs.
+
+## Repository map
+
+```text
+app.py                         Streamlit entry point
+config.py                      Paths, model settings, thresholds, colours, alert settings
+core/data_pipeline.py          Cleaning, deduplication, gap handling, ABC and seasonality
+core/demand_model.py           Demand velocity, censoring correction, trend and volatility
+core/inventory_engine.py       Safety stock, reorder points, timing, buckets and scores
+core/backtest.py               Rolling-origin stockout-warning benchmark
+core/alerts.py                 Alert digest and optional notification delivery
+ai/llm_client.py               Groq client, model fallback, and key loading
+ai/grounding.py                Evidence construction, Q&A routing and numeric validation
+ui/                            Streamlit views and charts
+monitor.py                     Command-line monitoring entry point
+test_app_verification.py       Offline verification script
+docs/DECISIONS.md              Design decisions and rationale
+```

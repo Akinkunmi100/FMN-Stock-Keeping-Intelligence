@@ -1,11 +1,4 @@
-"""
-ui/backtest_view.py — Historical Backtesting, Validation & Empirical Performance
-================================================================================
-Renders the model validation tab:
-- Walk-forward historical backtest metrics
-- Interactive Plotly confusion matrix heatmap
-- Operational analysis of recall vs. precision trade-offs in manufacturing supply chains
-"""
+"""Show the historical check for the stockout-warning rule."""
 
 from __future__ import annotations
 
@@ -18,7 +11,7 @@ from ui.charts import build_backtest_heatmap
 
 
 def render_backtest_view(meta: dict[str, Any]) -> None:
-    """Render the model validation & backtest workspace tab."""
+    """Render the historical check for the warning rule."""
     bt = meta.get("backtest", {})
     if not bt:
         st.warning("Backtest results unavailable.")
@@ -34,15 +27,15 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
 
     st.markdown(
         "<div class='queue-head'>"
-        "<h2>Model Validation & Historical Backtest</h2>"
-        f"<div class='section-note'>Empirical validation across {bt['total_evaluations']:,} historical checkpoints</div>"
+        "<h2>Model check</h2>"
+        f"<div class='section-note'>{bt['total_evaluations']:,} historical checkpoints tested</div>"
         "</div>",
         unsafe_allow_html=True,
     )
     st.caption(
-        f"A rolling-origin walk-forward backtest was executed over the {history_days}-day history ({date_min} to {date_max}). "
-        "At each date t, the model scored SKUs using strictly information available at t-1 (preventing data leakage) "
-        "and evaluated whether an 'Order Soon' alert was triggered ahead of an actual physical stockout occurring within the supplier lead-time horizon."
+        f"The app re-ran the warning rule across the {history_days}-day history ({date_min} to {date_max}). "
+        "At each point it used only information that would have been available the day before, then checked "
+        "whether the SKU reached zero stock within its supplier lead time."
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -52,7 +45,7 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
     with k1:
         st.markdown(
             f"<div class='metric'>"
-            f"<div class='metric-label'>Historical Recall</div>"
+            f"<div class='metric-label'>Stockouts caught early</div>"
             f"<div class='metric-value' style='color: #27AE60;'>{bt['recall']:.1%}</div>"
             f"<div class='metric-sub'>stockouts caught in advance</div>"
             f"</div>",
@@ -61,25 +54,25 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
     with k2:
         st.markdown(
             f"<div class='metric'>"
-            f"<div class='metric-label'>Precision</div>"
+            f"<div class='metric-label'>Alerts followed by stockout</div>"
             f"<div class='metric-value'>{bt['precision']:.1%}</div>"
-            f"<div class='metric-sub'>actionable risk alerts</div>"
+            f"<div class='metric-sub'>of all warnings raised</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
     with k3:
         st.markdown(
             f"<div class='metric'>"
-            f"<div class='metric-label'>F1-Score</div>"
+            f"<div class='metric-label'>Warning balance</div>"
             f"<div class='metric-value'>{bt['f1']:.1%}</div>"
-            f"<div class='metric-sub'>harmonic balance</div>"
+            f"<div class='metric-sub'>one view of both measures</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
     with k4:
         st.markdown(
             f"<div class='metric'>"
-            f"<div class='metric-label'>Total Checkpoints</div>"
+            f"<div class='metric-label'>Historical checks</div>"
             f"<div class='metric-value'>{bt['total_evaluations']:,}</div>"
             f"<div class='metric-sub'>across evaluated SKUs</div>"
             f"</div>",
@@ -96,20 +89,20 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
     with c_heat:
         st.plotly_chart(
             build_backtest_heatmap(bt["tp"], bt["fp"], bt["fn"], bt["tn"]),
-            use_container_width=True,
+            width="stretch",
         )
 
     with c_tbl:
-        st.markdown("### Empirical Performance Breakdown")
+        st.markdown("### What these results mean")
         total_eval = bt['total_evaluations'] if bt['total_evaluations'] > 0 else 1
         summary_df = pd.DataFrame({
-            "Classification Category": [
-                "True Positives (TP)",
-                "False Alarms (FP)",
-                "Missed Crises (FN)",
-                "True Negatives (TN)",
-                "Accuracy",
-                "False Alarm Rate",
+            "Result": [
+                "Stockouts caught",
+                "Warnings without stockout",
+                "Stockouts missed",
+                "Healthy days left unflagged",
+                "Overall accuracy",
+                "Review rate for healthy days",
             ],
             "Value": [
                 f"{bt['tp']:,} ({bt['tp']/total_eval:.1%})",
@@ -119,13 +112,13 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
                 f"{bt['accuracy']:.1%}",
                 f"{bt['false_alarm_rate']:.1%}",
             ],
-            "Operational Meaning": [
-                "Crisis successfully caught before stockout",
-                "Safety review triggered; stock did not reach 0",
-                "Stockout occurred without advance warning",
-                "Healthy stock correctly left unflagged",
-                "Overall correct classification rate",
-                "Rate of review among healthy inventory days",
+            "What it means": [
+                "The warning came before stock reached zero",
+                "A review was requested, but stock did not reach zero",
+                "Stock reached zero without an earlier warning",
+                "The app correctly left healthy stock alone",
+                "Share of historical checks classified correctly",
+                "Share of healthy days that still received a warning",
             ],
         })
         st.dataframe(summary_df, width="stretch", hide_index=True)
@@ -150,17 +143,16 @@ def render_backtest_view(meta: dict[str, Any]) -> None:
             )
 
     interpretation_paragraph = (
-        f"• <b>Recall ({bt['recall']:.1%}) vs. precision ({bt['precision']:.1%}):</b> the model is deliberately tuned toward "
-        f"catching real stockouts over minimizing false alarms — a missed stockout halts production, while a false alarm "
-        f"only costs a few minutes of review. That tradeoff is a stated design decision (see docs/DECISIONS.md), not a "
-        f"claim about a specific cost ratio this dataset can't measure."
+        f"• <b>Early warnings ({bt['recall']:.1%}) versus confirmed warnings ({bt['precision']:.1%}):</b> the current rule catches more potential "
+        f"stockouts by accepting more review alerts. That balance is a starting policy, not a measured cost optimum, because "
+        f"the dataset does not include the financial cost of a stockout or an unnecessary order."
     )
     if seasonality_note:
         interpretation_paragraph += f"<br><br>• {seasonality_note}"
 
     st.markdown(
         f"<div class='evidence'>"
-        f"<div class='evidence-title'>Reading These Results</div>"
+        f"<div class='evidence-title'>How to read these results</div>"
         f"<p>{interpretation_paragraph}</p>"
         f"</div>",
         unsafe_allow_html=True,

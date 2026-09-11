@@ -1,10 +1,7 @@
-"""
-ai/grounding.py — Numerical Evidence Grounding & Agentic Conversational Q&A
-============================================================================
-Ensures that all AI-generated text and diagnostics are strictly grounded in factual
-supply chain evidence to prevent hallucination.
+"""Build evidence for assistant responses and check the numbers they cite.
 
-Also provides the multi-intent routing engine for natural language Q&A.
+The module also routes common inventory questions to the smallest relevant set
+of scored rows before asking the assistant to answer.
 """
 
 from __future__ import annotations
@@ -168,10 +165,7 @@ def validate_grounded_numbers(text: str, facts: Any) -> bool:
     route's prompt) that the model is entitled to echo back without that
     being an invented figure.
 
-    Three adjustments versus a naive digit scan, all required for this to be
-    usable as an actual gate rather than dead code (a fourth — reading
-    numbers embedded inside evidence strings, not just top-level numeric
-    fields — lives in _collect_numeric_candidates' own docstring):
+    The check makes four practical adjustments to a simple digit scan:
     - Digit-bearing identifier/label strings already present verbatim in the
       evidence (the SKU code "SKU-1010", ISO dates, timing badges like
       "ORDER IN 3D") are stripped out of the text before number-tokenizing,

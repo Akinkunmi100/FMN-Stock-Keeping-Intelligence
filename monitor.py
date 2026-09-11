@@ -1,13 +1,7 @@
-"""
-monitor.py — Autonomous Background Monitoring & Alert Dispatcher
-================================================================
-Standalone CLI tool designed to be scheduled via Windows Task Scheduler or cron.
-Loads current inventory data, runs the early warning scoring engine, checks for
-threshold breaches, and dispatches email digests and webhook notifications.
+"""Command-line runner for scheduled inventory alerts.
 
-No operator needs to sit watching the dashboard.
+Usage examples::
 
-Usage:
     python monitor.py --dry-run
     python monitor.py --email
     python monitor.py --slack
@@ -17,13 +11,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import DATA_PATH
 from core.alerts import (
@@ -32,7 +19,6 @@ from core.alerts import (
     send_slack_alert,
     send_teams_alert,
 )
-from core.backtest import run_historical_backtest
 from core.data_pipeline import load_and_prepare_dataset
 from core.inventory_engine import score_sku_inventory
 
@@ -69,7 +55,7 @@ def run_pipeline():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Autonomous Supply Chain Alert Monitor")
+    parser = argparse.ArgumentParser(description="Supply chain alert runner")
     parser.add_argument("--dry-run", action="store_true", help="Simulate alert generation without sending")
     parser.add_argument("--email", action="store_true", help="Send email digest to configured recipients")
     parser.add_argument("--slack", action="store_true", help="Send alert card to Slack webhook")
@@ -83,7 +69,7 @@ def main():
         args.dry_run = True
 
     print("========================================================")
-    print("  SIGNAL / SUPPLY CHAIN AUTONOMOUS MONITOR RUNNER")
+    print("  SIGNAL / SUPPLY CHAIN ALERT RUNNER")
     print("========================================================")
     print(f"Loading data from: {DATA_PATH}")
 
@@ -99,7 +85,7 @@ def main():
 
     print("\n--- TOP URGENT REPLENISHMENT DEADLINES ---")
     for item in digest["urgent_skus"][:5]:
-        print(f"  • {item['sku_id']} ({item['category']}, Class {item['abc_class']}): {item['timing_urgency_badge']} | Order By: {item['order_by_date']} | ROQ: {item['roq']:,} units")
+        print(f"  • {item['sku_id']} ({item['category']}, Class {item['abc_class']}): {item['timing_urgency_badge']} | Order by: {item['order_by_date']} | Suggested order: {item['roq']:,} units")
 
     # 1. Email Alert
     if args.email or args.all or args.dry_run:

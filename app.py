@@ -1,16 +1,4 @@
-"""
-app.py — Signal / Supply Chain Control Room (Main Entry Point)
-==============================================================
-Slim, modular application wiring together the core data pipeline,
-mathematical inventory engine, AI diagnostic assistant, and interactive UI views.
-
-Architecture:
-- config.py: Central operational thresholds, service level z-scores, and color palette
-- core/: Data sanitization, stochastic safety stock, backtest simulation, and alerts
-- ai/: Free-tier Groq LLM client, evidence grounding, and conversational Q&A
-- ui/: Streamlit components, Plotly interactive visualizations, and CSS design system
-- monitor.py: Standalone scheduled CLI alert dispatcher
-"""
+"""Streamlit entry point for the Signal supply-chain review tool."""
 
 from __future__ import annotations
 
@@ -20,19 +8,16 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-# Central Configuration
+# Configuration and data pipeline
 from config import DATA_PATH, DEFAULT_GROQ_MODEL
 
-# Core Analytics Engines
 from core.backtest import run_historical_backtest
 from core.data_pipeline import load_and_prepare_dataset
 from core.inventory_engine import score_sku_inventory
 
-# AI Diagnostic Engine
-from ai.grounding import answer_agentic_question, explain_sku
+from ai.grounding import explain_sku
 from ai.llm_client import LLMResult
 
-# UI Visual Components
 from ui.attention_queue import render_attention_queue
 from ui.backtest_view import render_backtest_view
 from ui.chat_view import render_chat_view
@@ -106,27 +91,27 @@ def explain(row: pd.Series) -> LLMResult:
 def run_app() -> None:
     """Launch the interactive Streamlit dashboard."""
     st.set_page_config(
-        page_title="Signal / Supply Chain Control Room",
+        page_title="Signal - Supply chain early warning",
         page_icon="◌",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
-    # Inject custom design stylesheet
+    # Apply the shared visual style.
     st.markdown(get_application_css(), unsafe_allow_html=True)
 
-    # Load data and run analytical pipeline
+    # Load and score the current dataset.
     raw, scores, meta = load_and_score(str(DATA_PATH))
 
-    # Sidebar Navigation & Knowledge Panels
+    # Keep navigation and definitions together in the sidebar.
     with st.sidebar:
         st.markdown("<div class='eyebrow'>SIGNAL / 01</div>", unsafe_allow_html=True)
-        st.markdown("### Early Warning Control")
-        st.caption("Production replenishment triage, ABC analysis, stochastic lead time & rolling backtesting.")
+        st.markdown("### Inventory early warning")
+        st.caption("Review stock risk, see why a SKU is flagged, and decide what to check next.")
         st.divider()
 
         workspace_view = st.radio(
-            "Workspace View",
+            "Go to",
             [
                 "Attention queue",
                 "SKU detail",
@@ -137,48 +122,37 @@ def run_app() -> None:
         )
         st.divider()
 
-        st.markdown("<div class='eyebrow'>Dataset Overview</div>", unsafe_allow_html=True)
+        st.markdown("<div class='eyebrow'>Data in use</div>", unsafe_allow_html=True)
         st.caption(f"{meta['date_min']} → {meta['date_max']}")
-        st.caption(f"{len(scores)} SKUs tracked · {meta['rows']:,} records")
+        st.caption(f"{len(scores)} SKUs · {meta['rows']:,} daily records")
         st.caption(
-            f"ABC Distribution: {meta['abc_distribution'].get('A', 0)} Class A · "
-            f"{meta['abc_distribution'].get('B', 0)} Class B · {meta['abc_distribution'].get('C', 0)} Class C"
+            f"Priority classes: {meta['abc_distribution'].get('A', 0)} A · "
+            f"{meta['abc_distribution'].get('B', 0)} B · {meta['abc_distribution'].get('C', 0)} C"
         )
-        st.caption("Engine: Stochastic Lead Time ($\\sigma_L$) + DOW Seasonality + Leptokurtic Safety Buffer.")
+        st.caption("Risk uses stock coverage, demand changes, lead time, and a safety buffer.")
 
         st.divider()
 
-        # Expandable: AI Model Information
-        with st.expander("AI Model Info"):
+        with st.expander("Assistant details"):
             st.markdown(
-                f"**Groq free tier**\n\n"
-                f"- Configured model: `{DEFAULT_GROQ_MODEL}` (falls back to alternate Groq models if unavailable)\n"
-                f"- No credit card required; get a key at [console.groq.com](https://console.groq.com)\n"
-                f"- Without a key, the app runs fully on a local deterministic evidence-based fallback — clearly labeled as such wherever it's shown."
+                f"The assistant uses Groq model `{DEFAULT_GROQ_MODEL}` when a key is configured. "
+                "It receives the numbers retrieved for the question and does not decide the risk status. "
+                "Without a key, the app uses a local evidence summary instead."
             )
 
-        # Expandable: App Sharing & Deployment Guide
-        with st.expander("Deployment Options"):
+        with st.expander("For developers"):
             st.markdown(
-                "1. **Streamlit Community Cloud**: push to GitHub, connect at [share.streamlit.io](https://share.streamlit.io)\n"
-                "2. **Render.com**: build command `pip install -r requirements.txt`, "
-                "start command `streamlit run app.py --server.port $PORT`\n"
-                "3. **Docker**: `Dockerfile` included for internal server hosting"
+                "Run `streamlit run app.py` locally. For deployment steps and environment variables, "
+                "see the README."
             )
 
-        # Expandable: Significant Unaddressed Prediction Drivers
-        with st.expander("Signals Not Yet Integrated"):
+        with st.expander("What the model does not include"):
             st.markdown(
-                "1. **Open POs**: in-transit stock is currently invisible.\n"
-                "2. **Promotional calendar**: planned commercial sales spikes.\n"
-                "3. **Supplier reliability**: vendor-specific on-time delivery rates.\n"
-                "4. **Holiday/seasonal calendar**: demand shifts beyond day-of-week seasonality.\n"
-                "5. **Cross-SKU substitution**: product substitution effects.\n"
-                "6. **Minimum order quantities (MOQ)**: supplier batch constraints.\n"
-                "7. **Shelf life/expiration**: spoilage risk on perishable inventory."
+                "Open purchase orders, supplier reliability, promotions, holidays, "
+                "substitution between products, minimum order quantities, and shelf life."
             )
 
-    # Top Hero Banner & Primary Workspace Router
+    # Show the portfolio summary, then render the selected workspace.
     render_hero_banner(meta, scores)
 
     if workspace_view == "Attention queue":
@@ -196,8 +170,8 @@ def run_app() -> None:
     # Footer
     st.markdown(
         f"<div class='footer-note'>"
-        f"Signal Early Warning System · Data: {meta['date_min']} to {meta['date_max']} · "
-        f"{meta['rows']:,} rows · Groq ({DEFAULT_GROQ_MODEL}) with local grounded fallback."
+        f"Signal · Data from {meta['date_min']} to {meta['date_max']} · "
+        f"{meta['rows']:,} daily records · Groq assistant with local fallback."
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -206,4 +180,3 @@ def run_app() -> None:
 # Automatically execute UI when running in Streamlit runtime
 if st.runtime.exists():
     run_app()
-

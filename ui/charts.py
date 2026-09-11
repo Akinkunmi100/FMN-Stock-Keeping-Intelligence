@@ -309,7 +309,7 @@ def build_backtest_heatmap(tp: int, fp: int, fn: int, tn: int) -> go.Figure:
             )
 
     fig.update_layout(
-        title=dict(text="<b>Empirical Validation Confusion Matrix</b>", font=dict(family="Manrope", size=14)),
+        title=dict(text="<b>Warning results</b>", font=dict(family="Manrope", size=14)),
         margin=dict(l=20, r=20, t=40, b=20),
         height=300,
         xaxis=dict(side="top"),

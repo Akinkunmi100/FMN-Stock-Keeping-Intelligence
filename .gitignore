@@ -33,6 +33,15 @@ ENV/
 .env
 *.env
 
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Local audit materials not shipped with the application
+docs/DECISIONS.md
+test_app_verification.py
+Signal_Presentation.pptx
+
 # Temporary files & Office lockfiles
 ~$*
 .DS_Store

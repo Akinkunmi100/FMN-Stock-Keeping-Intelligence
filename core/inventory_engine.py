@@ -1,13 +1,7 @@
-"""
-core/inventory_engine.py — Safety Stock, ROP, Order Timing & Overstock Analytics
-================================================================================
-Calculates:
-1. Stochastic safety stock combining demand variance and lead-time variance
-2. ABC-adjusted Reorder Points (ROP) and Order-Up-To Levels (S)
-3. Recommended Order Quantities (ROQ) for procurement
-4. Exact replenishment deadlines and order-by dates (answers "when to order")
-5. Actionable overstock diagnostics, excess unit calculations, and remediation playbooks
-6. Continuous 0–100 multi-factor composite risk scores
+"""Calculate stock coverage, reorder points, timing, and risk scores.
+
+The functions here turn cleaned daily demand and inventory history into the
+numbers shown in the review queue and SKU detail view.
 """
 
 from __future__ import annotations

@@ -1,14 +1,4 @@
-"""
-ui/sku_detail.py — SKU Deep-Dive, Interactive Charts & What-If Simulator
-========================================================================
-Provides granular visibility into any individual SKU:
-- Time-series inventory trajectory vs. ROP and Safety Stock
-- Demand velocity vs. replenishment delivery spikes
-- Speedometer composite risk gauge
-- Interactive stress-test simulator (demand surges & vendor delivery delays)
-- Free-tier Groq LLM diagnostic explanation (strictly grounded)
-- Full parameter evidence audit table
-"""
+"""The detailed view for one SKU, including trends, scenarios, and evidence."""
 
 from __future__ import annotations
 
@@ -28,18 +18,18 @@ from ui.chat_view import render_inline_analyst
 
 
 def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
-    """Render the comprehensive SKU deep-dive tab."""
+    """Render the detailed view for the selected SKU."""
 
-    # ── SKU SELECTOR WITH FILTERS ──
+    # Narrow the list before asking the user to choose a SKU.
     filt_col1, filt_col2, filt_col3 = st.columns([1.2, 1.2, 2])
     with filt_col1:
         flagged_count = int((scores["urgency"] > 0).sum())
-        show_flagged_only = st.checkbox(f"Show flagged SKUs only ({flagged_count})", value=False)
+        show_flagged_only = st.checkbox(f"Show only SKUs needing attention ({flagged_count})", value=False)
     with filt_col2:
         all_categories = sorted(scores["category"].unique().tolist())
         sku_category_filter = st.selectbox(
-            "Filter by Category",
-            ["All Categories"] + all_categories,
+            "Category",
+            ["All categories"] + all_categories,
             key="sku_detail_cat_filter",
         )
 
@@ -47,7 +37,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     available = scores.copy()
     if show_flagged_only:
         available = available[available["urgency"] > 0]
-    if sku_category_filter != "All Categories":
+    if sku_category_filter != "All categories":
         available = available[available["category"] == sku_category_filter]
 
     sku_options = available["sku_id"].tolist()
@@ -57,7 +47,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
 
     with filt_col3:
         selected_sku = st.selectbox(
-            f"Select SKU for Deep-Dive Analysis ({len(sku_options)} available)",
+            f"SKU ({len(sku_options)} available)",
             sku_options,
             index=0,
         )
@@ -65,9 +55,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     row = scores[scores["sku_id"] == selected_sku].iloc[0]
     sku_history = raw[raw["sku_id"] == selected_sku].sort_values("date")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 1. HEADER & BADGES
-    # ─────────────────────────────────────────────────────────────────────────
+    # Status and timing are shown before the supporting charts.
     status_badge_class = f"status-{row['severity'].lower()}"
     abc_badge_class = f"status-{row['abc_class'].lower()}"
     timing_class = f"timing-{row['timing_color']}"
@@ -81,24 +69,18 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         f"<span class='timing-badge {timing_class}'>{row['timing_urgency_badge']}</span>"
         f"</div>"
         f"</div>"
-        f"<div class='section-note'>Methodology: {row['method']} · {row['history_days']} days recorded ({row['observations']} uncensored demand observations)</div>",
+        f"<div class='section-note'>Method: {row['method']} · {row['history_days']} days recorded ({row['observations']} usable demand observations)</div>",
         unsafe_allow_html=True,
     )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 2. KEY METRICS ROW
-    # ─────────────────────────────────────────────────────────────────────────
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Closing Stock", f"{row['stock']:,.0f}", "units on hand")
-    m2.metric("Days Coverage", f"{row['days_coverage']:.1f} d", f"lead time: {row['lead_time']:.0f} d")
-    m3.metric("Reorder Point", f"{row['reorder_point']:,.0f}", f"safety stock: {row['safety_stock']:,.0f}")
-    m4.metric("Order Deadline", str(row["order_by_date"]), row["timing_urgency_badge"])
-    m5.metric("Recommended Order", f"{row['roq']:,.0f} u", "target replenishment" if row["roq"] > 0 else "adequate")
-    m6.metric("Risk Score", f"{row['risk_score']:.0f}/100", f"{row['severity']} priority")
+    m1.metric("Stock on hand", f"{row['stock']:,.0f}", "units")
+    m2.metric("Days of stock", f"{row['days_coverage']:.1f}", f"lead time: {row['lead_time']:.0f} days")
+    m3.metric("Reorder point", f"{row['reorder_point']:,.0f}", f"buffer: {row['safety_stock']:,.0f}")
+    m4.metric("Order by", str(row["order_by_date"]), row["timing_urgency_badge"])
+    m5.metric("Suggested order", f"{row['roq']:,.0f}", "units" if row["roq"] > 0 else "no order needed")
+    m6.metric("Risk score", f"{row['risk_score']:.0f}/100", f"{row['severity']} level")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 3. ACTION CALLOUT PANEL
-    # ─────────────────────────────────────────────────────────────────────────
     border_color = (
         COLORS["critical"] if row["severity"] == "Critical" else
         COLORS["high"] if row["severity"] == "High" else
@@ -110,34 +92,34 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         action_html = f"""
         <div class='action-card' style='border-left-color: {border_color};'>
             <div class='action-card-title' style='color: {border_color};'>
-                RECOMMENDED PROCUREMENT ACTION: {row['timing_urgency_badge']}
+                NEXT ACTION: {row['timing_urgency_badge']}
             </div>
             <p>
-                • <b>Diagnosis:</b> {row['what_happened']}<br>
-                • <b>Action:</b> Release Purchase Order for <b>{row['roq']:,.0f} units</b> by <b>{row['order_by_date']}</b>.<br>
-                • <b>Lead Time:</b> Supplier delivery takes {row['lead_time']:.0f} days (variance: ±{row['lead_time_std']:.1f}d).<br>
-                • <b>Stockout Horizon:</b> Projected to deplete completely by <b>{row['stockout_date']}</b> ({row['days_coverage']:.1f} days remaining).<br>
-                • <b>Impact:</b> Class {row['abc_class']} item — failure to place order will cause factory stockouts.
+                • <b>Why it is flagged:</b> {row['what_happened']}<br>
+                • <b>Suggested action:</b> Review an order for <b>{row['roq']:,.0f} units</b> by <b>{row['order_by_date']}</b>.<br>
+                • <b>Lead time:</b> Supplier delivery takes {row['lead_time']:.0f} days (variation: {row['lead_time_std']:.1f} days).<br>
+                • <b>Expected stockout:</b> <b>{row['stockout_date']}</b> if demand and supply stay on the current path.<br>
+                • <b>Priority:</b> Class {row['abc_class']} by unit volume.
             </p>
         </div>
         """
     elif row["bucket"] == "Overstock risk":
         action_html = f"""
         <div class='overstock-card'>
-            <div class='overstock-card-title'>RECOMMENDED OVERSTOCK ACTION: EXCESS INVENTORY DETECTED</div>
+            <div class='overstock-card-title'>NEXT ACTION: REVIEW EXCESS STOCK</div>
             <p>
-                • <b>Surplus Units:</b> {row['excess_units']:,.0f} units over target Order-Up-To level.<br>
-                • <b>Coverage:</b> {row['days_coverage']:.1f} days of supply (+{row['days_over_target']:.1f} days over {row['coverage_limit']:.0f}-day target).<br>
-                • <b>Recommended Action:</b> Freeze subsequent purchase orders and review regional inter-warehouse transfer options.
+                • <b>Above target:</b> {row['excess_units']:,.0f} units.<br>
+                • <b>Coverage:</b> {row['days_coverage']:.1f} days of supply ({row['days_over_target']:.1f} days above target).<br>
+                • <b>Suggested action:</b> Pause new purchases and review whether stock should be moved or promoted.
             </p>
         </div>
         """
     else:
         action_html = f"""
         <div class='action-card' style='border-left-color: {COLORS["low"]};'>
-            <div class='action-card-title' style='color: {COLORS["low"]};'>INVENTORY POSITION HEALTHY</div>
+            <div class='action-card-title' style='color: {COLORS["low"]};'>NO ACTION NEEDED RIGHT NOW</div>
             <p>
-                Current stock ({row['stock']:,.0f} units) provides {row['days_coverage']:.1f} days of coverage, safely above the {row['lead_time']:.0f}-day replenishment cycle. No purchase order required at this time.
+                Current stock ({row['stock']:,.0f} units) provides {row['days_coverage']:.1f} days of coverage, above the {row['lead_time']:.0f}-day supplier lead time.
             </p>
         </div>
         """
@@ -145,41 +127,35 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
 
     st.divider()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 4. INTERACTIVE PLOTLY CHARTS
-    # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### Visual Time-Series Analytics")
+    st.markdown("### Stock and demand over time")
     col_c1, col_c2, col_c3 = st.columns([1.6, 1.6, 1])
 
     with col_c1:
         st.plotly_chart(
             build_stock_trajectory_chart(sku_history, row["reorder_point"], row["safety_stock"]),
-            use_container_width=True,
+            width="stretch",
         )
     with col_c2:
         st.plotly_chart(
             build_demand_and_receipts_chart(sku_history),
-            use_container_width=True,
+            width="stretch",
         )
     with col_c3:
         st.plotly_chart(
             build_risk_gauge(row["risk_score"], row["severity"]),
-            use_container_width=True,
+            width="stretch",
         )
 
     st.divider()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 5. WHAT-IF SENSITIVITY SIMULATOR
-    # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### What-If Sensitivity Simulator")
-    st.caption("Simulate unexpected consumer demand surges and supplier delivery delays in real time.")
+    st.markdown("### Try a scenario")
+    st.caption("See how the suggested order changes if demand rises or delivery takes longer.")
 
     sim_col1, sim_col2 = st.columns(2)
     with sim_col1:
-        sim_demand_surge = st.slider("Simulated Demand Surge (%)", min_value=-50, max_value=100, value=0, step=5)
+        sim_demand_surge = st.slider("Change in demand (%)", min_value=-50, max_value=100, value=0, step=5)
     with sim_col2:
-        sim_lead_delay = st.slider("Simulated Supplier Delivery Delay (Days)", min_value=0, max_value=14, value=0, step=1)
+        sim_lead_delay = st.slider("Extra supplier days", min_value=0, max_value=14, value=0, step=1)
 
     # Simulator calculations
     sim_demand = row["daily_demand"] * (1.0 + sim_demand_surge / 100.0)
@@ -191,7 +167,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     sim_roq = max(0.0, round((sim_demand * sim_lead + sim_ss + sim_cycle) - row["stock"], 0))
 
     sim_df = pd.DataFrame({
-        "Parameter": ["Daily Demand", "Lead Time", "Safety Stock", "Reorder Point", "Days Coverage", "Recommended Order (ROQ)"],
+        "Parameter": ["Daily demand", "Supplier lead time", "Safety buffer", "Reorder point", "Days of stock", "Suggested order"],
         "Baseline": [
             f"{row['daily_demand']:,.1f} u/d",
             f"{row['lead_time']:.0f} days",
@@ -208,7 +184,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
             f"{sim_coverage:.1f} days",
             f"{sim_roq:,.0f} units",
         ],
-        "Delta / Impact": [
+        "Change": [
             f"{sim_demand - row['daily_demand']:+,.1f} u/d",
             f"{sim_lead_delay:+d} days",
             f"{sim_ss - row['safety_stock']:+,.0f} units",
@@ -221,14 +197,11 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
 
     st.divider()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 6. AI GROUNDED EXPLANATION (FREE GROQ / LOCAL ENGINE)
-    # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### Operational Diagnosis")
-    st.caption("Strictly grounded in empirical calculation evidence — a live model call when available, otherwise a deterministic local explanation.")
+    st.markdown("### Why this SKU is flagged")
+    st.caption("The explanation uses this SKU's calculated values. Groq is used when configured; otherwise the app shows a local summary.")
 
-    if st.button("Generate / Refresh Diagnosis", type="primary") or "explanation" not in st.session_state or st.session_state.get("explanation_sku") != selected_sku:
-        with st.spinner("Compiling facts and generating diagnostic report…"):
+    if st.button("Explain this SKU", type="primary") or "explanation" not in st.session_state or st.session_state.get("explanation_sku") != selected_sku:
+        with st.spinner("Checking the SKU data..."):
             st.session_state.explanation = explain_sku(row)
             st.session_state.explanation_sku = selected_sku
 
@@ -237,7 +210,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         if llm_res.warning:
             st.info(llm_res.warning)
 
-        source_label = f"Live Model Explanation ({llm_res.model})" if llm_res.live and llm_res.model else "Local Grounded Deterministic Explanation"
+        source_label = f"Live assistant answer ({llm_res.model})" if llm_res.live and llm_res.model else "Local evidence summary"
         st.markdown(
             f"<div class='evidence'>"
             f"<div class='evidence-title'>{source_label}</div>"
@@ -248,10 +221,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
 
     st.divider()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 7. DETAILED EVIDENCE AUDIT TABLE
-    # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("### Complete Parameter Evidence Table")
+    st.markdown("### Numbers behind the decision")
     facts = build_sku_facts(row)
     abc_tier_label = {
         "A": f"Top {ABC_THRESHOLDS['A']:.0%} Volume",
@@ -260,26 +230,26 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     }.get(facts["abc_class"], "")
     evidence_table = pd.DataFrame({
         "Parameter": [
-            "Current Closing Stock",
-            "Daily Sales Velocity (Blended)",
-            "Forward Lead-Time Demand (Seasonally Modulated)",
-            "Day-of-Week Multiplier Factor",
-            "Days of Coverage",
-            "Supplier Lead Time",
-            "Lead Time Std Dev (Stochastic Variability)",
-            "Seasonal Reorder Point (ROP)",
-            "Stochastic Safety Stock",
-            "Target Order-Up-To Level (S)",
-            "Recommended Order Quantity (ROQ)",
-            "Projected Stockout Date",
-            "Order-By Replenishment Deadline",
-            "Order Urgency Status",
-            "Excess Units (Overstock Diagnostic)",
-            "Days Over Coverage Target",
-            "ABC Pareto Classification",
-            "Coefficient of Variation (CV)",
-            "Demand Acceleration Trend",
-            "Composite Risk Score",
+            "Current stock",
+            "Daily demand estimate",
+            "Demand during supplier lead time",
+            "Day-of-week demand adjustment",
+            "Days of stock",
+            "Supplier lead time",
+            "Lead-time variation",
+            "Reorder point",
+            "Safety buffer",
+            "Target stock level",
+            "Suggested order quantity",
+            "Expected stockout date",
+            "Order-by date",
+            "Order status",
+            "Excess stock",
+            "Days above target",
+            "Volume priority",
+            "Demand variability",
+            "Recent demand change",
+            "Risk score",
         ],
         "Value": [
             f"{facts['closing_stock_units']:,.1f} units",
@@ -308,11 +278,8 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
 
     st.divider()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 8. INLINE ASK THE ANALYST
-    # ─────────────────────────────────────────────────────────────────────────
     render_inline_analyst(
         scores=scores,
         context_key=f"sku_detail_{selected_sku}",
-        placeholder=f"Ask about {selected_sku}, its risk, or procurement needs…",
+        placeholder=f"Ask about {selected_sku}, its risk, or the suggested order...",
     )

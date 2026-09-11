@@ -1,22 +1,8 @@
-"""
-ai/llm_client.py — Free-Tier Groq LLM Client & Deterministic Fallback Engine
-============================================================================
-Integrates with Groq's free-tier inference API. The primary and fallback
-model ids are configured in config.py (DEFAULT_GROQ_MODEL /
-GROQ_FALLBACK_MODELS) — not hardcoded here, and not assumed by callers,
-since which model actually answers a given request can vary if the primary
-is unavailable and a fallback is used instead. LLMResult.model carries the
-model id that actually generated a live response, so the UI can display the
-real answer rather than a guess.
+"""Run the optional Groq assistant and provide a local fallback.
 
-Free Tier Information:
-- Groq provides a 100% free tier (no credit card required)
-- Get a free API key in 30 seconds at: https://console.groq.com
-
-Zero-Dependency Local Fallback:
-- If no GROQ_API_KEY is configured, or if offline, the system seamlessly falls
-  back to deterministic, locally computed evidence explanations.
-- The application is 100% functional without requiring any API key.
+Model names and generation settings live in ``config.py``. Every live result
+records the model that actually answered, while a missing key or failed request
+returns a deterministic summary built from the scored data.
 """
 
 from __future__ import annotations
@@ -83,7 +69,7 @@ def get_groq_api_key() -> str:
 
 def execute_groq_chat(messages: list[dict[str, str]]) -> LLMResult:
     """
-    Execute a chat completion request against Groq's free-tier API.
+    Execute a chat completion request against the configured Groq API.
     
     If GROQ_API_KEY is not set or the request encounters a network/rate-limit issue,
     returns an LLMResult with live=False and an informative advisory message.
@@ -93,7 +79,7 @@ def execute_groq_chat(messages: list[dict[str, str]]) -> LLMResult:
         return LLMResult(
             text="",
             live=False,
-            warning="Groq API key not detected. Powered by free local deterministic engine. (To enable live Groq inference, set GROQ_API_KEY from console.groq.com — it's completely free, no credit card required)."
+            warning="Groq API key not detected. Showing the local evidence summary. Set GROQ_API_KEY to enable the live assistant."
         )
 
     from groq import Groq
@@ -121,7 +107,7 @@ def execute_groq_chat(messages: list[dict[str, str]]) -> LLMResult:
             break
 
     if "rate_limit" in last_err.lower():
-        friendly_err = "Groq free-tier rate limit reached. Reverting to local grounded analysis."
+        friendly_err = "Groq rate limit reached. Showing the local evidence summary instead."
     elif "invalid_api_key" in last_err.lower() or "authentication" in last_err.lower():
         friendly_err = "Invalid Groq API key. Check your key at console.groq.com."
     else:

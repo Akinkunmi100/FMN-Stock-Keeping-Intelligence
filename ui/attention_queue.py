@@ -108,7 +108,7 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
                 f"  </div>"
                 f"</div>"
                 f"<div style='font-size: 0.92rem; line-height: 1.45; margin: 0.4rem 0;'>"
-                f"  <b>Why it is flagged:</b> {row['what_happened']}"
+                f"  <b>Why this needs attention:</b> {row['what_happened']}"
                 f"</div>"
                 f"<div style='font-size: 0.82rem; color: #5B6560; display: flex; gap: 1.4rem; flex-wrap: wrap; margin-top: 0.3rem;'>"
                 f"  <span><b>Stock:</b> {row['stock']:,.0f} units ({row['days_coverage']:.1f} days)</span>"

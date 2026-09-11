@@ -95,7 +95,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
                 NEXT ACTION: {row['timing_urgency_badge']}
             </div>
             <p>
-                • <b>Why it is flagged:</b> {row['what_happened']}<br>
+                • <b>Why this needs attention:</b> {row['what_happened']}<br>
                 • <b>Suggested action:</b> Review an order for <b>{row['roq']:,.0f} units</b> by <b>{row['order_by_date']}</b>.<br>
                 • <b>Lead time:</b> Supplier delivery takes {row['lead_time']:.0f} days (variation: {row['lead_time_std']:.1f} days).<br>
                 • <b>Expected stockout:</b> <b>{row['stockout_date']}</b> if demand and supply stay on the current path.<br>

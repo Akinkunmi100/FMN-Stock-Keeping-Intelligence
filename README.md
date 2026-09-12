@@ -6,7 +6,7 @@ It is designed to support a daily supply-chain review. It is not an ERP, a purch
 
 ## Problem understanding
 
-Even though thr team already has daily records, but the records do not answer the operational question quickly enough:
+Even though the team already has daily records, but the records do not answer the operational question quickly enough:
 
 > Which SKUs should someone look at today, what is driving the warning, and how much time is left to respond?
 

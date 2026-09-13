@@ -261,12 +261,12 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
         st.caption("Use these suggestions to review stock that is sitting above the target level.")
 
         for _, row in overstock.iterrows():
+            cov_label = f"{round(row['days_coverage'] * 24)} hours" if 0 < row["days_coverage"] < 1.0 else f"{row['days_coverage']:.1f} days"
             st.markdown(
                 f"<div class='overstock-card'>"
                 f"<div class='overstock-card-title'>{row['sku_id']} - {row['category']} (Class {row['abc_class']})</div>"
                 f"<div style='display:flex; gap:20px; margin: 0.6rem 0;'>"
                 f"<div><b>Current stock:</b> {row['stock']:,.0f} units</div>"
-                cov_label = f"{round(row['days_coverage'] * 24)} hours" if 0 < row["days_coverage"] < 1.0 else f"{row['days_coverage']:.1f} days"
                 f"<div><b>Days of coverage:</b> {cov_label} (target: {row['coverage_limit']:.0f} days)</div>"
                 f"<div><b>Excess inventory:</b> <span style='color:#C0392B; font-weight:bold;'>+{row['excess_units']:,.0f} units</span></div>"
                 f"<div><b>Above target by:</b> +{row['days_over_target']:.1f} days</div>"

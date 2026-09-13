@@ -274,7 +274,10 @@ def explain_sku(row: pd.Series) -> LLMResult:
         "3. Never say 'stock is low' when closing_stock_units = 0 — that is a stockout, not low stock.\n"
         "4. Do not use bullet points or markdown formatting. Write in plain prose paragraphs.\n"
         "5. Whenever days_of_coverage is less than 1.0 (zero-point-something days), you MUST ALWAYS express coverage in hours "
-        "(citing hours_of_coverage, e.g. '15 hours'), NEVER as decimal days like '0.6 days'."
+        "(citing hours_of_coverage, e.g. '15 hours'), NEVER as decimal days like '0.6 days'.\n"
+        "6. Write in professional business English: do NOT use statistical acronyms (never say 'CV='), "
+        "do NOT use developer terms (never say 'order soon queue' or 'composite risk score'), and "
+        "do NOT tell someone to place an order by a past date (if overdue, state that the deadline passed on that date and order immediately)."
     )
     user_content = json.dumps({"evidence": facts}, ensure_ascii=False)
 
@@ -287,28 +290,140 @@ def explain_sku(row: pd.Series) -> LLMResult:
     if result.live and result.text:
         return result
 
-    # Deterministic local fallback
-    roq_val = float(row.get("roq", 0.0))
-    roq_text = f" Recommend ordering {roq_val:,.0f} units to restore the target inventory buffer." if roq_val > 0 else ""
-    order_by = str(row.get("order_by_date", "immediately"))
-    timing_msg = str(row.get("timing_urgency_msg", ""))
-    cov_str = (
-        f"{round(row['days_coverage'] * 24)} hours"
-        if 0 < row["days_coverage"] < 1.0
-        else f"{row['days_coverage']:.1f} days"
+    # Deterministic local fallback (executive plain-language synthesis)
+    return LLMResult(
+        text=_build_deterministic_sku_explanation(row),
+        live=False,
+        warning=result.warning,
     )
 
-    local_text = (
-        f"{row['sku_id']} (Category: {row['category']}, Class {row['abc_class']}) is classified in the {row['bucket'].lower()} queue "
-        f"with a composite risk score of {row['risk_score']:.0f}/100 ({row['severity']} severity). On-hand inventory stands at {row['stock']:,.0f} units, "
-        f"providing {cov_str} of coverage against a {row['lead_time']:.0f}-day replenishment cycle. "
-        f"The seasonal reorder point is {row['reorder_point']:,.0f} units (incorporating {row['safety_stock']:,.0f} units of safety buffer). "
-        f"Recent demand has moved {row['trend_pct']:+.1%} (CV={row['cv']:.2f}). "
-        f"Replenishment status: {timing_msg}.{roq_text} "
-        f"Recommended action: {('release purchase requisition immediately for ' + f'{roq_val:,.0f} units by ' + order_by + '.' if row['urgency'] >= 2 else 'maintain routine operational monitoring.')}"
-    )
 
-    return LLMResult(text=local_text, live=False, warning=result.warning)
+def _build_deterministic_sku_explanation(row: pd.Series) -> str:
+    """
+    Generate an executive, plain-language diagnostic explanation for a SKU.
+    Eliminates internal statistical jargon (e.g. CV, queue, composite risk score)
+    and resolves date/action contradictions.
+    """
+    sku = str(row.get("sku_id", ""))
+    cat = str(row.get("category", ""))
+    abc = str(row.get("abc_class", ""))
+    stock = float(row.get("stock", 0.0))
+    lead_time = float(row.get("lead_time", 7.0))
+    days_cov = float(row.get("days_coverage", 0.0))
+    rop = float(row.get("reorder_point", 0.0))
+    roq = float(row.get("roq", 0.0))
+    trend = float(row.get("trend_pct", 0.0))
+    bucket = str(row.get("bucket", "On track"))
+    order_by = str(row.get("order_by_date", ""))
+    days_deadline = int(row.get("days_until_deadline", 0))
+    is_new = bool(row.get("is_new", False))
+    history_days = int(row.get("history_days", 0))
+    receipts_7d = float(row.get("receipts_7d", 0.0))
+    excess_units = float(row.get("excess_units", 0.0))
+    days_over_target = float(row.get("days_over_target", 0.0))
+    coverage_limit = float(row.get("coverage_limit", 28.0))
+
+    # Coverage phrasing: convert sub-day to hours
+    if stock <= 0:
+        cov_text = "0 days (stock depleted)"
+    elif days_cov < 1.0:
+        hrs = round(days_cov * 24)
+        cov_text = f"approximately {hrs} hour{'s' if hrs != 1 else ''} of supply"
+    else:
+        cov_text = f"{days_cov:.1f} days of supply"
+
+    # Demand trend phrasing without statistical acronyms like CV
+    trend_sentence = ""
+    if abs(trend) >= 0.05:
+        dir_word = "increased" if trend > 0 else "declined"
+        trend_sentence = f" Recent demand has {dir_word} by {abs(trend):.1%} compared with the previous period."
+
+    # Cold-start caveat
+    cold_start_note = ""
+    if is_new:
+        cold_start_note = (
+            f" As a newly introduced product ({history_days} days recorded), "
+            f"targets use category-level baselines rather than extended SKU history."
+        )
+
+    # Paragraph 1: Situation Assessment
+    if stock <= 0:
+        p1 = (
+            f"{sku} ({cat}, Class {abc}) is currently out of stock with 0 units on hand. "
+            f"Supplier delivery requires {lead_time:.0f} days, and the safe reorder threshold is {rop:,.0f} units."
+            f"{trend_sentence}{cold_start_note}"
+        )
+    elif bucket == "Order soon" and days_cov < 1.0:
+        p1 = (
+            f"{sku} ({cat}, Class {abc}) is facing imminent stockout with only {stock:,.0f} units remaining "
+            f"({cov_text}). Current inventory is far below the safe reorder threshold of {rop:,.0f} units, "
+            f"and supplier delivery takes {lead_time:.0f} days."
+            f"{trend_sentence}{cold_start_note}"
+        )
+    elif bucket == "Order soon":
+        p1 = (
+            f"{sku} ({cat}, Class {abc}) is at high risk of stockout. On-hand inventory of {stock:,.0f} units "
+            f"provides only {cov_text}, which cannot cover the {lead_time:.0f}-day supplier delivery cycle. "
+            f"Inventory has fallen below the safe reorder threshold of {rop:,.0f} units."
+            f"{trend_sentence}{cold_start_note}"
+        )
+    elif bucket == "Plan replenishment":
+        p1 = (
+            f"{sku} ({cat}, Class {abc}) is approaching replenishment thresholds. Current stock of {stock:,.0f} units "
+            f"provides {cov_text}, compared with a {lead_time:.0f}-day supplier delivery time. "
+            f"Stock is below the target reorder level of {rop:,.0f} units."
+            f"{trend_sentence}{cold_start_note}"
+        )
+    elif bucket == "Overstock risk":
+        p1 = (
+            f"{sku} ({cat}, Class {abc}) is currently overstocked. Inventory of {stock:,.0f} units provides "
+            f"{cov_text}, which is {days_over_target:.1f} days above the {coverage_limit:.0f}-day target ceiling "
+            f"(approximately {excess_units:,.0f} units above the target order-up-to level)."
+            f"{trend_sentence}"
+        )
+    elif bucket == "Monitor closely":
+        p1 = (
+            f"{sku} ({cat}, Class {abc}) is experiencing demand acceleration. Recent sales velocity has "
+            f"increased by {trend:+.1%}. Current stock of {stock:,.0f} units provides {cov_text} against a "
+            f"{lead_time:.0f}-day supplier delivery window."
+        )
+    elif days_cov < lead_time and receipts_7d > 0:
+        p1 = (
+            f"{sku} ({cat}, Class {abc}) recently received a delivery of {receipts_7d:,.0f} units in the last 7 days, "
+            f"maintaining stock at {stock:,.0f} units ({cov_text}). While coverage is within the {lead_time:.0f}-day lead time, "
+            f"inbound pipeline shipments are actively sustaining operations."
+        )
+    else:
+        p1 = (
+            f"{sku} ({cat}, Class {abc}) is in a healthy inventory position. On-hand stock of {stock:,.0f} units "
+            f"provides {cov_text}, comfortably exceeding the {lead_time:.0f}-day supplier delivery window."
+        )
+
+    # Paragraph 2: Action Plan
+    if stock <= 0:
+        if days_deadline < 0:
+            deadline_text = f"The reorder deadline passed {abs(days_deadline)} days ago ({order_by}), and the order is critically overdue."
+        else:
+            deadline_text = f"The reorder is due {order_by}."
+        p2 = f"{deadline_text} Place an emergency expedited purchase order for {roq:,.0f} units immediately to resume fulfillment."
+    elif bucket == "Order soon":
+        if days_deadline < 0:
+            deadline_text = f"The reorder deadline passed {abs(days_deadline)} days ago ({order_by}), meaning replenishment is overdue."
+        elif days_deadline == 0:
+            deadline_text = "The reorder deadline is today."
+        else:
+            deadline_text = f"The reorder deadline is in {days_deadline} days ({order_by})."
+        p2 = f"{deadline_text} Place an expedited purchase order for {roq:,.0f} units immediately to prevent a stockout."
+    elif bucket == "Plan replenishment":
+        p2 = f"Prepare and submit a purchase order for {roq:,.0f} units by {order_by} to maintain an adequate safety buffer."
+    elif bucket == "Overstock risk":
+        p2 = "Pause new purchase orders. Review options to redistribute excess stock to higher-demand locations or explore promotional bundling."
+    elif bucket == "Monitor closely":
+        p2 = f"Monitor daily sales closely and prepare a purchase order before inventory drops to the reorder point ({rop:,.0f} units)."
+    else:
+        p2 = "No procurement action is required at this time. Continue standard operational monitoring."
+
+    return f"{p1}\n\n{p2}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

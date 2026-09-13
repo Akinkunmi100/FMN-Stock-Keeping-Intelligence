@@ -73,9 +73,24 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Stock on hand", f"{row['stock']:,.0f}", "units")
-    m2.metric("Days of stock", f"{row['days_coverage']:.1f}", f"lead time: {row['lead_time']:.0f} days")
+    stock_delta = "STOCKED OUT" if row["stock"] <= 0 else "units"
+    coverage_delta = (
+        "STOCKED OUT" if row["stock"] <= 0
+        else "IMMINENT (<24h)" if row["days_coverage"] < 1.0
+        else f"lead time: {row['lead_time']:.0f} days"
+    )
+    coverage_display_val = (
+        "0.0" if row["stock"] <= 0
+        else f"{round(row['days_coverage'] * 24)} hrs" if row["days_coverage"] < 1.0
+        else f"{row['days_coverage']:.1f}"
+    )
+    m1.metric("Stock on hand", f"{row['stock']:,.0f}", stock_delta, delta_color="inverse" if row["stock"] <= 0 else "off")
+    m2.metric(
+        "Stock coverage",
+        coverage_display_val,
+        coverage_delta,
+        delta_color="inverse" if (row["stock"] <= 0 or row["days_coverage"] < 1.0) else "off",
+    )
     m3.metric("Reorder point", f"{row['reorder_point']:,.0f}", f"buffer: {row['safety_stock']:,.0f}")
     m4.metric("Order by", str(row["order_by_date"]), row["timing_urgency_badge"])
     m5.metric("Suggested order", f"{row['roq']:,.0f}", "units" if row["roq"] > 0 else "no order needed")
@@ -88,7 +103,25 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         COLORS["low"]
     )
 
+    cov_text = (
+        f"{round(row['days_coverage'] * 24)} hours"
+        if 0 < row["days_coverage"] < 1.0
+        else f"{row['days_coverage']:.1f} days"
+    )
+
     if row["urgency"] >= 2 and row["bucket"] != "Overstock risk":
+        order_action_clause = (
+            f"Review an emergency expedited order for <b>{row['roq']:,.0f} units</b> immediately (reorder deadline was <b>{row['order_by_date']}</b>)."
+            if row.get("days_until_deadline", 0) < 0
+            else f"Review an order for <b>{row['roq']:,.0f} units</b> by <b>{row['order_by_date']}</b>."
+        )
+        stockout_line = (
+            f"<span style='color: #D32F2F; font-weight: 700;'>Already stocked out</span> (fully depleted as of {row['stockout_date']})."
+            if row["stock"] <= 0
+            else f"<b>{row['stockout_date']}</b> (imminent — ~{round(row['days_coverage'] * 24)} hours of supply remaining)."
+            if row["days_coverage"] < 1.0
+            else f"<b>{row['stockout_date']}</b> if demand and supply stay on the current path."
+        )
         action_html = f"""
         <div class='action-card' style='border-left-color: {border_color};'>
             <div class='action-card-title' style='color: {border_color};'>
@@ -96,9 +129,9 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
             </div>
             <p>
                 • <b>Why this needs attention:</b> {row['what_happened']}<br>
-                • <b>Suggested action:</b> Review an order for <b>{row['roq']:,.0f} units</b> by <b>{row['order_by_date']}</b>.<br>
+                • <b>Suggested action:</b> {order_action_clause}<br>
                 • <b>Lead time:</b> Supplier delivery takes {row['lead_time']:.0f} days (variation: {row['lead_time_std']:.1f} days).<br>
-                • <b>Expected stockout:</b> <b>{row['stockout_date']}</b> if demand and supply stay on the current path.<br>
+                • <b>Expected stockout:</b> {stockout_line}<br>
                 • <b>Priority:</b> Class {row['abc_class']} by unit volume.
             </p>
         </div>
@@ -109,7 +142,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
             <div class='overstock-card-title'>NEXT ACTION: REVIEW EXCESS STOCK</div>
             <p>
                 • <b>Above target:</b> {row['excess_units']:,.0f} units.<br>
-                • <b>Coverage:</b> {row['days_coverage']:.1f} days of supply ({row['days_over_target']:.1f} days above target).<br>
+                • <b>Coverage:</b> {cov_text} of supply ({row['days_over_target']:.1f} days above target).<br>
                 • <b>Suggested action:</b> Pause new purchases and review whether stock should be moved or promoted.
             </p>
         </div>
@@ -119,7 +152,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         <div class='action-card' style='border-left-color: {COLORS["low"]};'>
             <div class='action-card-title' style='color: {COLORS["low"]};'>NO ACTION NEEDED RIGHT NOW</div>
             <p>
-                Current stock ({row['stock']:,.0f} units) provides {row['days_coverage']:.1f} days of coverage, above the {row['lead_time']:.0f}-day supplier lead time.
+                Current stock ({row['stock']:,.0f} units) provides {cov_text} of coverage, above the {row['lead_time']:.0f}-day supplier lead time.
             </p>
         </div>
         """
@@ -166,6 +199,16 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
     sim_cycle = max(7.0 * sim_demand, sim_demand * np.sqrt(2 * max(sim_lead, 1.0)))
     sim_roq = max(0.0, round((sim_demand * sim_lead + sim_ss + sim_cycle) - row["stock"], 0))
 
+    baseline_cov_str = (
+        f"{round(row['days_coverage'] * 24)} hrs ({row['days_coverage']:.1f}d)"
+        if 0 < row["days_coverage"] < 1.0
+        else f"{row['days_coverage']:.1f} days"
+    )
+    sim_cov_str = (
+        f"{round(sim_coverage * 24)} hrs ({sim_coverage:.1f}d)"
+        if 0 < sim_coverage < 1.0
+        else f"{sim_coverage:.1f} days"
+    )
     sim_df = pd.DataFrame({
         "Parameter": ["Daily demand", "Supplier lead time", "Safety buffer", "Reorder point", "Days of stock", "Suggested order"],
         "Baseline": [
@@ -173,7 +216,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
             f"{row['lead_time']:.0f} days",
             f"{row['safety_stock']:,.0f} units",
             f"{row['reorder_point']:,.0f} units",
-            f"{row['days_coverage']:.1f} days",
+            baseline_cov_str,
             f"{row['roq']:,.0f} units",
         ],
         "Simulated": [
@@ -181,7 +224,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
             f"{sim_lead:.0f} days",
             f"{sim_ss:,.0f} units",
             f"{sim_rop:,.0f} units",
-            f"{sim_coverage:.1f} days",
+            sim_cov_str,
             f"{sim_roq:,.0f} units",
         ],
         "Change": [
@@ -256,7 +299,7 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
             f"{facts['daily_demand_units']:,.1f} units/day",
             f"{facts['forward_lead_time_demand']:,.1f} units over {facts['lead_time_days']:.0f}d",
             f"{row['dow_multiplier']:.2f}x cyclical modulation",
-            f"{facts['days_of_coverage']:.1f} days",
+            f"{round(facts['days_of_coverage'] * 24)} hours ({facts['days_of_coverage']:.1f} days)" if 0 < facts["days_of_coverage"] < 1.0 else f"{facts['days_of_coverage']:.1f} days",
             f"{facts['lead_time_days']:.0f} days",
             f"{facts['lead_time_std_days']:.2f} days",
             f"{facts['reorder_point_units']:,.1f} units",

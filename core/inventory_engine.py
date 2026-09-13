@@ -266,6 +266,16 @@ def calculate_composite_risk(
 # 5. DIAGNOSTIC ROOT-CAUSE SYNTHESIZER ("WHAT HAPPENED")
 # ─────────────────────────────────────────────────────────────────────────────
 
+def format_coverage_text(days: float) -> str:
+    """Format days of coverage into human-readable text, converting sub-day values into hours."""
+    if days <= 0:
+        return "0 days"
+    if days < 1.0:
+        hrs = round(days * 24)
+        return f"{hrs} hour{'s' if hrs != 1 else ''}"
+    return f"{days:.1f} days"
+
+
 def synthesize_what_happened(
     sku_id: str,
     category: str,
@@ -290,6 +300,9 @@ def synthesize_what_happened(
     excess_units: float,
     days_over_target: float,
     coverage_limit: float,
+    receipts_7d: float = 0.0,
+    is_new: bool = False,
+    history_days: int = 0,
 ) -> str:
     """
     Build the short explanation shown in the review queue and SKU detail view.
@@ -311,48 +324,114 @@ def synthesize_what_happened(
         direction = "up" if trend_pct > 0 else "down"
         return f" Recent demand is {direction} {abs(trend_pct):.1%} compared with the previous period."
 
+    def cold_start_note() -> str:
+        """Append a data-quality caveat for newly introduced products."""
+        if not is_new:
+            return ""
+        return (
+            f" Note: as a newly introduced product ({history_days} days recorded), "
+            f"inventory targets use category-level demand baselines rather than SKU-specific history."
+        )
+
     order_by = readable_date(order_by_date)
     projected_stockout = readable_date(stockout_date)
+    cov_str = format_coverage_text(days_coverage)
 
-    if bucket == "Order soon":
+    # ── ACTIVE STOCKOUT (stock = 0) ──
+    if stock <= 0:
         timing_clause = (
-            f"The order date was {abs(days_until_deadline)} day{'s' if abs(days_until_deadline) != 1 else ''} ago ({order_by})"
+            f"The reorder deadline was {abs(days_until_deadline)} day{'s' if abs(days_until_deadline) != 1 else ''} ago ({order_by}), meaning an order is overdue"
             if days_until_deadline < 0 else
             f"The order is due today ({order_by})"
             if days_until_deadline == 0 else
             f"The order is due in {days_until_deadline} day{'s' if days_until_deadline != 1 else ''} ({order_by})"
         )
         return (
-            f"Stock is low: {stock:,.0f} units will last about {days_coverage:.1f} days, "
+            f"Stockout alert: 0 units on hand (currently out of stock). "
+            f"Supplier delivery takes {lead_time:.0f} days, and the safe reorder point is {reorder_point:,.0f} units. "
+            f"{timing_clause}. Stock has been fully depleted as of {projected_stockout}.{demand_change_sentence()} "
+            f"Suggested action: place an emergency expedited order for {roq:,.0f} units immediately.{cold_start_note()}"
+        )
+
+    # ── IMMINENT STOCKOUT (less than 1 day of supply) ──
+    if bucket == "Order soon" and days_coverage < 1.0:
+        timing_clause = (
+            f"The reorder deadline was {abs(days_until_deadline)} day{'s' if abs(days_until_deadline) != 1 else ''} ago ({order_by})"
+            if days_until_deadline < 0 else
+            f"The order is due today ({order_by})"
+            if days_until_deadline == 0 else
+            f"The order is due in {days_until_deadline} day{'s' if days_until_deadline != 1 else ''} ({order_by})"
+        )
+        hrs = round(days_coverage * 24)
+        hrs_str = f"{hrs} hour{'s' if hrs != 1 else ''}"
+        return (
+            f"Stockout is imminent: only {stock:,.0f} units remain (approximately {hrs_str} of supply). "
+            f"Supplier delivery takes {lead_time:.0f} days. The safe reorder point is {reorder_point:,.0f} units. "
+            f"{timing_clause}. Stock is projected to deplete today.{demand_change_sentence()} "
+            f"Suggested action: place an expedited order for {roq:,.0f} units immediately.{cold_start_note()}"
+        )
+
+    # ── ORDER SOON (stock > 0, coverage > 1 day but still critical) ──
+    if bucket == "Order soon":
+        timing_clause = (
+            f"The reorder deadline was {abs(days_until_deadline)} day{'s' if abs(days_until_deadline) != 1 else ''} ago ({order_by})"
+            if days_until_deadline < 0 else
+            f"The order is due today ({order_by})"
+            if days_until_deadline == 0 else
+            f"The order is due in {days_until_deadline} day{'s' if days_until_deadline != 1 else ''} ({order_by})"
+        )
+        return (
+            f"Stock is low: {stock:,.0f} units will last about {cov_str}, "
             f"but supplier delivery takes {lead_time:.0f} days. The safe reorder point is {reorder_point:,.0f} units, "
             f"so current stock is below the level needed to cover delivery time. {timing_clause}. "
             f"Stock is expected to run out on {projected_stockout}.{demand_change_sentence()} "
-            f"Suggested action: place an order for {roq:,.0f} units now."
+            f"Suggested action: place an order for {roq:,.0f} units now.{cold_start_note()}"
         )
-    elif bucket == "Plan replenishment":
+
+    # ── PLAN REPLENISHMENT ──
+    if bucket == "Plan replenishment":
         return (
             f"Stock is below the safe reorder point: {stock:,.0f} units on hand versus {reorder_point:,.0f} units needed. "
-            f"It will last about {days_coverage:.1f} days, while supplier delivery takes {lead_time:.0f} days."
+            f"It will last about {cov_str}, while supplier delivery takes {lead_time:.0f} days."
             f"{demand_change_sentence()} Order by {order_by}. "
-            f"Suggested action: prepare an order for {roq:,.0f} units."
+            f"Suggested action: prepare an order for {roq:,.0f} units.{cold_start_note()}"
         )
-    elif bucket == "Overstock risk":
+
+    # ── OVERSTOCK RISK ──
+    if bucket == "Overstock risk":
         return (
-            f"Stock is higher than needed: {stock:,.0f} units will last about {days_coverage:.1f} days, "
-            f"which is {days_over_target:.1f} days above the target. That is approximately {excess_units:,.0f} extra units."
-            f"{demand_change_sentence()} Suggested action: pause new purchases and review whether the extra stock can be moved or promoted."
+            f"Stock exceeds target levels: {stock:,.0f} units will last about {cov_str} "
+            f"({days_over_target:.1f} days above the {coverage_limit:.0f}-day target ceiling). "
+            f"Current inventory is approximately {excess_units:,.0f} units above the target order-up-to level."
+            f"{demand_change_sentence()} Suggested action: pause new purchases and review whether the extra stock can be redistributed or promoted."
         )
-    elif bucket == "Monitor closely":
+
+    # ── MONITOR CLOSELY (demand acceleration) ──
+    if bucket == "Monitor closely":
         return (
-            f"Recent demand is changing faster than usual.{demand_change_sentence()} "
-            f"Current stock will last about {days_coverage:.1f} days, compared with a {lead_time:.0f}-day supplier delivery time. "
-            f"Suggested action: check daily sales and plan an order before stock falls to the safe reorder point."
+            f"Demand surge detected: recent sales velocity has increased by {trend_pct:+.1%} compared with the previous period. "
+            f"Current stock of {stock:,.0f} units will last about {cov_str}, "
+            f"approaching the {lead_time:.0f}-day supplier delivery window. "
+            f"Suggested action: monitor daily sales closely and prepare a purchase order before inventory "
+            f"hits the safe reorder point ({reorder_point:,.0f} units)."
         )
-    else:
+
+    # ── ON TRACK ──
+    # Issue #1 fix: when coverage < lead time but receipts suppressed the trigger,
+    # explain the receipt pipeline rather than contradicting the math.
+    if days_coverage < lead_time and receipts_7d > 0:
         return (
-            f"Stock is in a healthy position: {stock:,.0f} units will last about {days_coverage:.1f} days, "
-            f"which is longer than the {lead_time:.0f}-day supplier delivery time. No order is needed right now."
+            f"Recent delivery received: {receipts_7d:,.0f} units arrived in the past 7 days, "
+            f"maintaining stock at {stock:,.0f} units ({cov_str} of supply). "
+            f"Although coverage is within the {lead_time:.0f}-day lead time window, "
+            f"new purchase orders are temporarily held while the recent shipment settles into the pipeline. "
+            f"No additional order is needed at this time."
         )
+
+    return (
+        f"Stock is in a healthy position: {stock:,.0f} units will last about {cov_str}, "
+        f"which is longer than the {lead_time:.0f}-day supplier delivery time. No order is needed right now."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -528,6 +607,9 @@ def score_sku_inventory(
         excess_units=overstock_diag["excess_units"],
         days_over_target=overstock_diag["days_over_target"],
         coverage_limit=coverage_limit,
+        receipts_7d=receipts_7d,
+        is_new=is_new,
+        history_days=history_days,
     )
 
     method = (
@@ -568,6 +650,7 @@ def score_sku_inventory(
         "safety_stock": safety_stock,
         "reorder_point": reorder_point,
         "days_coverage": days_coverage,
+        "hours_coverage": round(days_coverage * 24, 1),
         "roq": recommended_order_qty if urgency >= 2 else 0.0,
         "order_up_to": order_up_to,
         "receipts_7d": receipts_7d,

@@ -347,9 +347,10 @@ def build_coverage_countdown_bar(flagged_df: pd.DataFrame) -> go.Figure:
             orientation="h",
             name="Days of Coverage On Hand",
             marker_color=bar_colors,
-            text=[f"{c:.1f} days" for c in days_cov],
+            text=[f"{round(c * 24)} hrs" if 0 < c < 1.0 else f"{c:.1f} days" for c in days_cov],
             textposition="auto",
-            hovertemplate="<b>%{y}</b><br>Coverage: %{x:.1f} days<extra></extra>",
+            customdata=[f"{round(c * 24)} hours ({c:.1f} days)" if 0 < c < 1.0 else f"{c:.1f} days" for c in days_cov],
+            hovertemplate="<b>%{y}</b><br>Coverage: %{customdata}<extra></extra>",
         )
     )
 

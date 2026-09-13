@@ -31,6 +31,7 @@ def build_sku_facts(row: pd.Series) -> dict[str, Any]:
         "severity": str(row.get("severity", "Low")),
         "risk_score": round(float(row.get("risk_score", 0.0)), 1),
         "flag_type": str(row.get("flag_type", "")),
+        "is_new_product": bool(row.get("is_new", False)),
         "history_days": int(row.get("history_days", 0)),
         "observations": int(row.get("observations", 0)),
         "closing_stock_units": round(float(row.get("stock", 0.0)), 1),
@@ -38,6 +39,12 @@ def build_sku_facts(row: pd.Series) -> dict[str, Any]:
         "forward_lead_time_demand": round(float(row.get("forward_lead_demand", 0.0)), 1),
         "recommended_order_quantity": round(float(row.get("roq", 0.0)), 0),
         "days_of_coverage": round(float(row.get("days_coverage", 0.0)), 1),
+        "hours_of_coverage": round(float(row.get("days_coverage", 0.0)) * 24, 1),
+        "coverage_display": (
+            "0 days (Stocked out)" if float(row.get("stock", 0.0)) <= 0
+            else f"{round(float(row.get('days_coverage', 0.0)) * 24)} hours" if float(row.get("days_coverage", 0.0)) < 1.0
+            else f"{round(float(row.get('days_coverage', 0.0)), 1)} days"
+        ),
         "lead_time_days": round(float(row.get("lead_time", 0.0)), 1),
         "lead_time_std_days": round(float(row.get("lead_time_std", 0.0)), 2),
         "reorder_point_units": round(float(row.get("reorder_point", 0.0)), 1),
@@ -187,6 +194,10 @@ def validate_grounded_numbers(text: str, facts: Any) -> bool:
     for val in _collect_numeric_candidates(facts):
         mag = abs(val)
         allowed_candidates.extend([mag, round(mag, 0), round(mag, 1)])
+        # Allow hours conversion for any sub-day coverage figure (0 < val < 1.0)
+        if 0.0 < mag < 1.0:
+            hrs = mag * 24.0
+            allowed_candidates.extend([hrs, round(hrs, 0), round(hrs, 1)])
 
     for number in extract_number_tokens(text):
         if not any(abs(number - cand) <= max(0.5, cand * 0.01) for cand in allowed_candidates):
@@ -229,11 +240,41 @@ def explain_sku(row: pd.Series) -> LLMResult:
     """
     facts = build_sku_facts(row)
     instructions = (
-        "You are an expert supply-chain analyst presenting to operations leadership. "
-        "Explain the SKU's risk bucket, stockout timeline, and recommended action in 2 concise paragraphs. "
-        "Strictly cite only the provided figures: closing stock, days of coverage, lead time, "
-        "reorder point, recommended order quantity (ROQ), order-by date, and demand trend. "
-        "Never invent external figures. Do not use markdown bullet points."
+        "You are an expert supply-chain analyst presenting a concise inventory diagnostic to operations leadership. "
+        "Your task is to explain THIS SKU's current inventory situation in exactly 2 paragraphs (no bullet points, no markdown). "
+        "Strictly cite ONLY the figures provided in the evidence — never invent, estimate, or round numbers beyond what is given.\n\n"
+
+        "PARAGRAPH 1 — SITUATION ASSESSMENT:\n"
+        "State the risk bucket (the 'risk_bucket' field) and what is driving it. Follow these rules exactly:\n"
+        "• If closing_stock_units = 0: say 'currently out of stock (0 units on hand)'. This is a STOCKOUT, not 'low stock'.\n"
+        "• If closing_stock_units > 0 but days_of_coverage < 1.0: Stockout is imminent. Express the remaining coverage strictly in HOURS "
+        "using hours_of_coverage (e.g. cite '{hours_of_coverage:.0f} hours of supply' or 'approximately {hours_of_coverage:.0f} hours of coverage'). "
+        "NEVER say '0.X days' or cite decimal days when coverage is under 1 day.\n"
+        "• If risk_bucket is 'Order soon': compare closing stock, days_of_coverage, and lead_time_days to show the shortfall.\n"
+        "• If risk_bucket is 'Overstock risk': state that stock exceeds target levels. Cite excess_units (surplus above the order-up-to level) "
+        "and days_over_target (extra days above the coverage ceiling). Do NOT confuse these two metrics.\n"
+        "• If risk_bucket is 'On track' AND days_of_coverage < lead_time_days AND receipts_last_7_days > 0: "
+        "explain that a recent delivery is maintaining the position — do NOT claim 'coverage is longer than lead time' when the numbers show otherwise.\n"
+        "• If risk_bucket is 'On track' AND days_of_coverage >= lead_time_days: state that stock is healthy and sufficient.\n"
+        "• If risk_bucket is 'Monitor closely': state the demand trend direction and magnitude (demand_change_percent).\n"
+        "• If is_new_product is true: note that this is a newly introduced SKU with only history_days days of data, "
+        "so inventory targets are based on category-level demand baselines rather than SKU-specific history.\n"
+        "• Cite the demand_change_percent if its absolute value is >= 5%.\n\n"
+
+        "PARAGRAPH 2 — RECOMMENDED ACTION:\n"
+        "State the recommended_order_quantity (ROQ) if > 0, or state no order is needed. "
+        "Reference the order_by_date: if it is in the past, say the deadline has passed and the order is overdue; "
+        "if today, say the order is due today; if future, state the date. "
+        "For stockouts or imminent stockouts, recommend an EMERGENCY EXPEDITED order. "
+        "For overstock, recommend pausing new purchases and reviewing redistribution or promotion.\n\n"
+
+        "ABSOLUTE RULES:\n"
+        "1. Every number you cite must come directly from the evidence JSON. No invented figures.\n"
+        "2. Never say 'days of coverage exceeds lead time' when days_of_coverage < lead_time_days.\n"
+        "3. Never say 'stock is low' when closing_stock_units = 0 — that is a stockout, not low stock.\n"
+        "4. Do not use bullet points or markdown formatting. Write in plain prose paragraphs.\n"
+        "5. Whenever days_of_coverage is less than 1.0 (zero-point-something days), you MUST ALWAYS express coverage in hours "
+        "(citing hours_of_coverage, e.g. '15 hours'), NEVER as decimal days like '0.6 days'."
     )
     user_content = json.dumps({"evidence": facts}, ensure_ascii=False)
 
@@ -251,11 +292,16 @@ def explain_sku(row: pd.Series) -> LLMResult:
     roq_text = f" Recommend ordering {roq_val:,.0f} units to restore the target inventory buffer." if roq_val > 0 else ""
     order_by = str(row.get("order_by_date", "immediately"))
     timing_msg = str(row.get("timing_urgency_msg", ""))
+    cov_str = (
+        f"{round(row['days_coverage'] * 24)} hours"
+        if 0 < row["days_coverage"] < 1.0
+        else f"{row['days_coverage']:.1f} days"
+    )
 
     local_text = (
         f"{row['sku_id']} (Category: {row['category']}, Class {row['abc_class']}) is classified in the {row['bucket'].lower()} queue "
         f"with a composite risk score of {row['risk_score']:.0f}/100 ({row['severity']} severity). On-hand inventory stands at {row['stock']:,.0f} units, "
-        f"providing {row['days_coverage']:.1f} days of coverage against a {row['lead_time']:.0f}-day replenishment cycle. "
+        f"providing {cov_str} of coverage against a {row['lead_time']:.0f}-day replenishment cycle. "
         f"The seasonal reorder point is {row['reorder_point']:,.0f} units (incorporating {row['safety_stock']:,.0f} units of safety buffer). "
         f"Recent demand has moved {row['trend_pct']:+.1%} (CV={row['cv']:.2f}). "
         f"Replenishment status: {timing_msg}.{roq_text} "
@@ -294,25 +340,46 @@ def answer_agentic_question(
             row = selected.iloc[0]
             facts = build_sku_facts(row)
             instructions = (
-                "Answer the user's specific inquiry about this SKU using only the provided factual evidence. "
-                "Include current stock, days of coverage, lead time, reorder point, "
-                "recommended order quantity (ROQ), order-by date, and plain-language action."
+                "You are an expert supply-chain analyst. Answer the user's specific inquiry about this SKU using ONLY the provided factual evidence. "
+                "Include current stock, days of coverage, lead time, reorder point, ROQ, order-by date, and a plain-language recommended action.\n\n"
+
+                "KEY INTERPRETATION RULES:\n"
+                "• If closing_stock_units = 0: this is a STOCKOUT — say 'out of stock', never 'low stock'.\n"
+                "• If closing_stock_units > 0 but days_of_coverage < 1.0: state 'stockout is imminent' and express coverage strictly in HOURS "
+                "(using hours_of_coverage, e.g. '{hours_of_coverage:.0f} hours'), NEVER decimal days like '0.6 days'.\n"
+                "• If risk_bucket is 'On track' but days_of_coverage < lead_time_days: a recent delivery (receipts_last_7_days) is sustaining the position — "
+                "do NOT claim coverage exceeds lead time when the numbers say otherwise.\n"
+                "• If is_new_product is true: note that inventory targets use category-level baselines due to limited history.\n"
+                "• For overstock: cite excess_units (above order-up-to level) and days_over_target (above coverage ceiling) separately.\n"
+                "• If order_by_date is in the past: say the deadline has passed and the order is overdue.\n"
+                "• Never invent figures not present in the evidence."
             )
-            prompt = [{"role": "system", "content": instructions}, {"role": "user", "content": json.dumps({"sku_evidence": facts})}]
+            prompt = [{"role": "system", "content": instructions}, {"role": "user", "content": json.dumps({"sku_evidence": facts, "user_question": question})}]
             result = _reject_if_ungrounded(execute_groq_chat(prompt), [instructions, facts])
             if result.live and result.text:
                 return result
 
             # Local fallback
             roq_units = f"Recommended order: {row['roq']:,.0f} units" if row['roq'] > 0 else "Stock is currently adequate"
+            deadline_days = int(row.get("days_until_deadline", 0))
+            order_by_str = str(row.get("order_by_date", ""))
+            cov_str = (
+                f"{round(row['days_coverage'] * 24)} hours"
+                if 0 < row["days_coverage"] < 1.0
+                else f"{row['days_coverage']:.1f} days"
+            )
+            if deadline_days < 0:
+                action_timing = f"immediately (deadline was {order_by_str})"
+            else:
+                action_timing = f"by {order_by_str}"
             return LLMResult(
                 text=(
                     f"**{row['sku_id']}** ({row['category']}, Class {row['abc_class']}): Classified as **{row['bucket'].upper()}** "
                     f"(Risk {row['risk_score']:.0f}/100, {row['severity']} severity).\n\n"
-                    f"• **Current Stock**: {row['stock']:,.0f} units ({row['days_coverage']:.1f} days coverage vs. {row['lead_time']:.0f}-day lead time)\n"
+                    f"• **Current Stock**: {row['stock']:,.0f} units ({cov_str} coverage vs. {row['lead_time']:.0f}-day lead time)\n"
                     f"• **Reorder Point**: {row['reorder_point']:,.0f} units (Safety Stock: {row['safety_stock']:,.0f} units)\n"
                     f"• **Replenishment Timing**: {row['timing_urgency_msg']}\n"
-                    f"• **Action Required**: {roq_units} by {row['order_by_date']}."
+                    f"• **Action Required**: {roq_units} {action_timing}."
                 ),
                 live=False,
                 warning=result.warning,

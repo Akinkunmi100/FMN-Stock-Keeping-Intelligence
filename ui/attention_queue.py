@@ -95,6 +95,13 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
                 COLORS["overstock"] if row["bucket"] == "Overstock risk" else
                 COLORS["medium"]
             )
+            stock_display = (
+                "<span style='color: #D32F2F; font-weight: 700;'>0 units (Stocked out)</span>"
+                if row["stock"] <= 0
+                else f"{row['stock']:,.0f} units ({round(row['days_coverage'] * 24)} hours)"
+                if row["days_coverage"] < 1.0
+                else f"{row['stock']:,.0f} units ({row['days_coverage']:.1f} days)"
+            )
             st.markdown(
                 f"<div class='action-card' style='border-left-color: {border_color}; margin-bottom: 0.85rem;'>"
                 f"<div style='display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.35rem;'>"
@@ -111,7 +118,7 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
                 f"  <b>Why this needs attention:</b> {row['what_happened']}"
                 f"</div>"
                 f"<div style='font-size: 0.82rem; color: #5B6560; display: flex; gap: 1.4rem; flex-wrap: wrap; margin-top: 0.3rem;'>"
-                f"  <span><b>Stock:</b> {row['stock']:,.0f} units ({row['days_coverage']:.1f} days)</span>"
+                f"  <span><b>Stock:</b> {stock_display}</span>"
                 f"  <span><b>Lead time:</b> {row['lead_time']:.0f} days (variation {row['lead_time_std']:.1f} days)</span>"
                 f"  <span><b>Reorder point:</b> {row['reorder_point']:,.0f} units</span>"
                 f"  <span><b>Order by:</b> {row['order_by_date']}</span>"
@@ -156,7 +163,9 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
     display["Risk"] = display["risk_score"].map(lambda x: f"{x:.0f}")
     display["Stock"] = display["stock"].map(lambda x: f"{x:,.0f}")
     display["Demand/Day"] = display["daily_demand"].map(lambda x: f"{x:,.1f}")
-    display["Coverage"] = display["days_coverage"].map(lambda x: f"{x:.1f} d")
+    display["Coverage"] = display["days_coverage"].map(
+        lambda x: "0 d (Stocked out)" if x <= 0 else f"{round(x * 24)} hrs" if x < 1.0 else f"{x:.1f} d"
+    )
     display["Lead Time"] = display["lead_time"].map(lambda x: f"{x:.0f} d")
     display["Order By Date"] = display["order_by_date"].astype(str)
     display["Order Timing"] = display["timing_urgency_badge"]
@@ -220,6 +229,13 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
             for idx, (_, row) in enumerate(row_batch):
                 with cols[idx]:
                     border_color = COLORS["critical"] if row["timing_color"] == "critical" else COLORS["high"]
+                    stockout_info = (
+                        "<span style='color: #D32F2F; font-weight: 700;'>Already stocked out</span> (0 days of supply)"
+                        if row["stock"] <= 0
+                        else f"{row['stockout_date']} ({round(row['days_coverage'] * 24)} hours of supply)"
+                        if row["days_coverage"] < 1.0
+                        else f"{row['stockout_date']} ({row['days_coverage']:.1f} days of supply)"
+                    )
                     st.markdown(
                         f"<div class='action-card' style='border-left-color: {border_color};'>"
                         f"<div class='action-card-title'><b>{row['sku_id']}</b> ({row['category']})</div>"
@@ -227,7 +243,7 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
                         f"<span class='timing-badge timing-{row['timing_color']}'>{row['timing_urgency_badge']}</span>"
                         f"<p style='margin-top: 0.6rem;'>"
                         f"<b>Order by:</b> {row['order_by_date']}<br>"
-                        f"<b>Expected stockout:</b> {row['stockout_date']} ({row['days_coverage']:.1f} days of supply)<br>"
+                        f"<b>Expected stockout:</b> {stockout_info}<br>"
                         f"<b>Supplier lead time:</b> {row['lead_time']:.0f} days<br>"
                         f"<b>Suggested order:</b> <b>{row['roq']:,.0f} units</b>"
                         f"</p>"
@@ -250,7 +266,8 @@ def render_attention_queue(scores: pd.DataFrame, meta: dict[str, Any]) -> None:
                 f"<div class='overstock-card-title'>{row['sku_id']} - {row['category']} (Class {row['abc_class']})</div>"
                 f"<div style='display:flex; gap:20px; margin: 0.6rem 0;'>"
                 f"<div><b>Current stock:</b> {row['stock']:,.0f} units</div>"
-                f"<div><b>Days of coverage:</b> {row['days_coverage']:.1f} days (target: {row['coverage_limit']:.0f} days)</div>"
+                cov_label = f"{round(row['days_coverage'] * 24)} hours" if 0 < row["days_coverage"] < 1.0 else f"{row['days_coverage']:.1f} days"
+                f"<div><b>Days of coverage:</b> {cov_label} (target: {row['coverage_limit']:.0f} days)</div>"
                 f"<div><b>Excess inventory:</b> <span style='color:#C0392B; font-weight:bold;'>+{row['excess_units']:,.0f} units</span></div>"
                 f"<div><b>Above target by:</b> +{row['days_over_target']:.1f} days</div>"
                 f"</div>"

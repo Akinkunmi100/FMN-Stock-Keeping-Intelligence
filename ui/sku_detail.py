@@ -73,6 +73,8 @@ def render_sku_detail(raw: pd.DataFrame, scores: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
+    # ── 1. HEADER KPI METRICS ──
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     stock_delta = "STOCKED OUT" if row["stock"] <= 0 else "units"
     coverage_delta = (
         "STOCKED OUT" if row["stock"] <= 0
